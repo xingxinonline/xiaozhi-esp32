@@ -18,7 +18,7 @@
 #include <esp_log.h>
 
 #include <wifi_station.h>
-#include <wifi_configuration_ap.h>
+#include <ble_configuration_wifi.h>
 #include <ssid_manager.h>
 
 static const char *TAG = "WifiBoard";
@@ -40,16 +40,16 @@ void WifiBoard::EnterWifiConfigMode() {
     auto& application = Application::GetInstance();
     application.SetDeviceState(kDeviceStateWifiConfiguring);
 
-    auto& wifi_ap = WifiConfigurationAp::GetInstance();
-    wifi_ap.SetLanguage(Lang::CODE);
-    wifi_ap.SetSsidPrefix("Xiaozhi");
+    auto& wifi_ap = WifiConfigGATTsApp::GetInstance();
+    // wifi_ap.SetLanguage(Lang::CODE);
+    // wifi_ap.SetSsidPrefix("Xiaozhi");
     wifi_ap.Start();
 
     // 显示 WiFi 配置 AP 的 SSID 和 Web 服务器 URL
     std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
-    hint += wifi_ap.GetSsid();
+    // hint += wifi_ap.GetSsid();
     hint += Lang::Strings::ACCESS_VIA_BROWSER;
-    hint += wifi_ap.GetWebServerUrl();
+    // hint += wifi_ap.GetWebServerUrl();
     hint += "\n\n";
     
     // 播报配置 WiFi 的提示
@@ -83,20 +83,20 @@ void WifiBoard::StartNetwork() {
     auto& wifi_station = WifiStation::GetInstance();
     wifi_station.OnScanBegin([this]() {
         auto display = Board::GetInstance().GetDisplay();
-        display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+        if (display) display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
     });
     wifi_station.OnConnect([this](const std::string& ssid) {
         auto display = Board::GetInstance().GetDisplay();
         std::string notification = Lang::Strings::CONNECT_TO;
         notification += ssid;
         notification += "...";
-        display->ShowNotification(notification.c_str(), 30000);
+        if (display) display->ShowNotification(notification.c_str(), 30000);
     });
     wifi_station.OnConnected([this](const std::string& ssid) {
         auto display = Board::GetInstance().GetDisplay();
         std::string notification = Lang::Strings::CONNECTED_TO;
         notification += ssid;
-        display->ShowNotification(notification.c_str(), 30000);
+        if (display) display->ShowNotification(notification.c_str(), 30000);
     });
     wifi_station.Start();
 

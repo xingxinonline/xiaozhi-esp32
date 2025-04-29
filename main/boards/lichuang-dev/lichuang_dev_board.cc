@@ -159,9 +159,9 @@ public:
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    // virtual Display* GetDisplay() override {
+    //     return display_;
+    // }
     
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);

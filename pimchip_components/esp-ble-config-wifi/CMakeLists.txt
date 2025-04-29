@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "ble_configuration_wifi.cc"
+        "ssid_manager.cc"
+        "blufi_security.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        "esp_wifi"
+        "bt"
+        "nvs_flash"
+        "json"
+        "mbedtls"
+)

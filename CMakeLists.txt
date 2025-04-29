@@ -6,6 +6,7 @@ cmake_minimum_required(VERSION 3.16)
 
 set(PROJECT_VER "1.6.0")
 
+set(EXTRA_COMPONENT_DIRS "pimchip_components")
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
 
