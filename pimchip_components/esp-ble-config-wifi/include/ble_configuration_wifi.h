@@ -51,7 +51,12 @@ typedef struct {
 class WifiConfigGATTsApp {
 public:
     static WifiConfigGATTsApp& GetInstance();
+    void SetSsidPrefix(const std::string &&ssid_prefix);
+    void SetDeviceId(const std::string &&device_id);
+    void SetLanguage(const std::string &&language);
     void Start();
+
+    std::string GetSsid();
 
     // Delete copy constructor and assignment operator
     WifiConfigGATTsApp(const WifiConfigGATTsApp&) = delete;
@@ -64,6 +69,8 @@ private:
 
     EventGroupHandle_t event_group_;
     std::string ssid_prefix_;
+    std::string device_id_;
+    std::string language_;
     esp_timer_handle_t scan_timer_ = nullptr;
     bool is_connecting_ = false;
 

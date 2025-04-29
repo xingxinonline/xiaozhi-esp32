@@ -38,16 +38,18 @@ std::string WifiBoard::GetBoardType() {
 
 void WifiBoard::EnterWifiConfigMode() {
     auto& application = Application::GetInstance();
+    std::string device_id = Board::GetInstance().GetUuid();
     application.SetDeviceState(kDeviceStateWifiConfiguring);
 
     auto& wifi_ap = WifiConfigGATTsApp::GetInstance();
-    // wifi_ap.SetLanguage(Lang::CODE);
-    // wifi_ap.SetSsidPrefix("Xiaozhi");
+    wifi_ap.SetLanguage(Lang::CODE);
+    wifi_ap.SetSsidPrefix("LanDouBao");
+    wifi_ap.SetDeviceId(device_id.c_str());
     wifi_ap.Start();
 
     // 显示 WiFi 配置 AP 的 SSID 和 Web 服务器 URL
     std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
-    // hint += wifi_ap.GetSsid();
+    hint += wifi_ap.GetSsid();
     hint += Lang::Strings::ACCESS_VIA_BROWSER;
     // hint += wifi_ap.GetWebServerUrl();
     hint += "\n\n";

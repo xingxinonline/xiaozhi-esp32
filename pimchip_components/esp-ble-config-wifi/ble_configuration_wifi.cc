@@ -17,6 +17,7 @@
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_gap_ble_api.h"
+#include "esp_bt_device.h"
 #include "esp_gatts_api.h"
 #include "esp_gatt_common_api.h"
 #include "ssid_manager.h"
@@ -61,6 +62,28 @@ static int gl_sta_ssid_len;
 static wifi_sta_list_t gl_sta_list;
 static bool gl_sta_is_connecting = false;
 static esp_blufi_extra_info_t gl_sta_conn_info;
+
+static uint8_t blufi_service_uuid128[32] = {
+    /* LSB <--------------------------------------------------------------------------------> MSB */
+    //first uuid, 16bit, [12],[13] is the value
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xFF, 0xF3, 0x00, 0x00,
+};
+
+static esp_ble_adv_data_t blufi_adv_data = {
+    .set_scan_rsp = false,
+    .include_name = true,
+    .include_txpower = true,
+    .min_interval = 0x0006, //slave connection min interval, Time = min_interval * 1.25 msec
+    .max_interval = 0x0010, //slave connection max interval, Time = max_interval * 1.25 msec
+    .appearance = 0x00,
+    .manufacturer_len = 0,
+    .p_manufacturer_data =  NULL,
+    .service_data_len = 0,
+    .p_service_data = NULL,
+    .service_uuid_len = 16,
+    .p_service_uuid = blufi_service_uuid128,
+    .flag = 0x6,
+};
 
 extern "C" {
 void blufi_dh_negotiate_data_handler(uint8_t *data, int len, uint8_t **output_data, int *output_len, bool *need_free);
@@ -365,12 +388,17 @@ void WifiConfigGATTsApp::initialise_wifi(void)
 void WifiConfigGATTsApp::blufi_event_callback(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *param)
 {
     auto& self = WifiConfigGATTsApp::GetInstance();
+    std::string ssid = self.GetSsid();
     /* actually, should post to blufi_task handle the procedure,
      * now, as a example, we do it more simply */
     switch (event) {
     case ESP_BLUFI_EVENT_INIT_FINISH:
         ESP_LOGI(TAG,"BLUFI init finish\n");
-        esp_blufi_adv_start();
+        // Get the SSID
+        
+        esp_ble_gap_set_device_name(ssid.c_str());
+        ESP_LOGI(TAG,"BLUFI set device name %s\n", ssid.c_str());
+        esp_ble_gap_config_adv_data(&blufi_adv_data);
         break;
     case ESP_BLUFI_EVENT_DEINIT_FINISH:
         ESP_LOGI(TAG,"BLUFI deinit finish\n");
@@ -385,7 +413,10 @@ void WifiConfigGATTsApp::blufi_event_callback(esp_blufi_cb_event_t event, esp_bl
         ESP_LOGI(TAG,"BLUFI ble disconnect\n");
         ble_is_connected = false;
         blufi_security_deinit();
-        esp_blufi_adv_start();
+        // Get the SSID
+        esp_ble_gap_set_device_name(ssid.c_str());
+        ESP_LOGI(TAG,"BLUFI set device name %s\n", ssid.c_str());
+        esp_ble_gap_config_adv_data(&blufi_adv_data);
         break;
     case ESP_BLUFI_EVENT_SET_WIFI_OPMODE:
         ESP_LOGI(TAG,"BLUFI Set WIFI opmode %d\n", param->wifi_mode.op_mode);
@@ -507,6 +538,14 @@ void WifiConfigGATTsApp::blufi_event_callback(esp_blufi_cb_event_t event, esp_bl
     case ESP_BLUFI_EVENT_RECV_CUSTOM_DATA:
         ESP_LOGI(TAG,"Recv Custom Data %" PRIu32 "\n", param->custom_data.data_len);
         esp_log_buffer_hex("Custom Data", param->custom_data.data, param->custom_data.data_len);
+        if(param->custom_data.data_len == 2 && param->custom_data.data[0] == 0xFF && param->custom_data.data[1] == 0xA1)
+        {
+            ESP_LOGI(TAG,"Recv Get Device UUID Command\n");
+            static uint8_t device_uuid[39] = {0xFF, 0xA1};
+            snprintf((char *)device_uuid + 2, sizeof(device_uuid), "%s", self.device_id_.c_str());
+            ESP_LOGI(TAG,"Device UUID: %s\n", device_uuid + 2);
+            esp_blufi_send_custom_data(device_uuid, 38);
+        }
         break;
 	case ESP_BLUFI_EVENT_RECV_USERNAME:
         /* Not handle currently */
@@ -559,6 +598,21 @@ esp_err_t esp_blufi_host_init(void)
 
 }
 
+void WifiConfigGATTsApp::SetLanguage(const std::string &&language)
+{
+    language_ = language;
+}
+
+void WifiConfigGATTsApp::SetSsidPrefix(const std::string &&ssid_prefix)
+{
+    ssid_prefix_ = ssid_prefix;
+}
+
+void WifiConfigGATTsApp::SetDeviceId(const std::string &&device_id)
+{
+    device_id_ = device_id;
+}
+
 void WifiConfigGATTsApp::Start()
 {
     initialise_wifi();
@@ -573,6 +627,15 @@ void WifiConfigGATTsApp::Start()
     ESP_ERROR_CHECK(esp_ble_gap_register_callback(esp_blufi_gap_event_handler));
     esp_blufi_profile_init();
     return;
+}
+
+std::string WifiConfigGATTsApp::GetSsid()
+{
+    // Get MAC and use it to generate a unique SSID
+    const uint8_t *mac = esp_bt_dev_get_address();
+    char ssid[32];
+    snprintf(ssid, sizeof(ssid), "%s-%02X%02X", ssid_prefix_.c_str(), mac[4], mac[5]);
+    return std::string(ssid);
 }
 
 #else
