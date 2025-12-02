@@ -63,6 +63,12 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+    
+    // 手动模式支持（用于 JoyInside 等协议）
+    void SetManualMode(bool enabled);
+    bool IsManualMode() const { return manual_mode_; }
+    void SendAudioFinish();  // 手动模式下发送音频结束信号
+    Protocol* GetProtocol() { return protocol_.get(); }
 
 private:
     Application();
@@ -76,6 +82,7 @@ private:
     volatile DeviceState device_state_ = kDeviceStateUnknown;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
+    bool manual_mode_ = false;  // 手动模式（按下录音，松开结束）
     std::string last_error_message_;
     AudioService audio_service_;
 

@@ -5,6 +5,10 @@
 #include "audio_codec.h"
 #include "mqtt_protocol.h"
 #include "websocket_protocol.h"
+#if CONFIG_USE_JOYINSIDE_PROTOCOL
+#include "joyinside_protocol.h"
+#include "joyinside_auth.h"  // For JoyInsideInitSntp
+#endif
 #include "assets/lang_config.h"
 #include "mcp_server.h"
 #include "assets.h"
@@ -387,6 +391,12 @@ void Application::Start() {
     /* Wait for the network to be ready */
     board.StartNetwork();
 
+#if CONFIG_USE_JOYINSIDE_PROTOCOL
+    // WiFi 连接成功后立即启动 SNTP 时间同步（非阻塞）
+    // 这样在用户唤醒时，时间同步很可能已经完成
+    JoyInsideInitSntp();
+#endif
+
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
 
@@ -405,6 +415,26 @@ void Application::Start() {
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
+#if CONFIG_USE_JOYINSIDE_PROTOCOL
+    // JoyInside 协议优先：使用自由对话协议，不依赖 OTA 配置
+    ESP_LOGI(TAG, "Using JoyInside free voice chat protocol");
+    auto joyinside_protocol = std::make_unique<JoyInsideProtocol>();
+    
+    // 设置打断回调：停止播放并重置解码器
+    joyinside_protocol->SetInterruptCallback([this]() {
+        ESP_LOGI(TAG, "JoyInside interrupt callback: stopping playback");
+        Schedule([this]() {
+            // 停止当前播放
+            audio_service_.ResetDecoder();
+            // 切换到监听状态
+            if (device_state_ == kDeviceStateSpeaking) {
+                SetDeviceState(kDeviceStateListening);
+            }
+        });
+    });
+    
+    protocol_ = std::move(joyinside_protocol);
+#else
     if (ota.HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
     } else if (ota.HasWebsocketConfig()) {
@@ -413,6 +443,7 @@ void Application::Start() {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
     }
+#endif
 
     protocol_->OnConnected([this]() {
         DismissAlert();
@@ -621,8 +652,16 @@ void Application::OnWakeWordDetected() {
     }
 
     if (device_state_ == kDeviceStateIdle) {
-        audio_service_.EncodeWakeWord();
+        // 获取唤醒词（这个是同步的，很快）
+        auto wake_word = audio_service_.GetLastWakeWord();
+        ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 
+#if CONFIG_SEND_WAKE_WORD_DATA
+        // 启动异步编码任务（不阻塞）
+        audio_service_.EncodeWakeWord();
+#endif
+
+        // 检查/建立连接
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel()) {
@@ -631,19 +670,19 @@ void Application::OnWakeWordDetected() {
             }
         }
 
-        auto wake_word = audio_service_.GetLastWakeWord();
-        ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
-        // Encode and send the wake word data to the server
+        // 边编码边发送（PopWakeWordPacket 会等待下一个编码好的包）
         while (auto packet = audio_service_.PopWakeWordPacket()) {
             protocol_->SendAudio(std::move(packet));
         }
         // Set the chat state to wake word detected
         protocol_->SendWakeWordDetected(wake_word);
+#endif
         SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-#else
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-        // Play the pop up sound to indicate the wake word is detected
+#if !CONFIG_SEND_WAKE_WORD_DATA
+        // Play the popup sound after entering listening mode (after ResetDecoder is called)
+        // AEC will filter out the sound from microphone input
+        ESP_LOGI(TAG, "Playing wake word popup sound");
         audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
 #endif
     } else if (device_state_ == kDeviceStateSpeaking) {
@@ -894,4 +933,26 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
+}
+
+void Application::SetManualMode(bool enabled) {
+    manual_mode_ = enabled;
+    ESP_LOGI(TAG, "Manual mode %s", enabled ? "enabled" : "disabled");
+    
+    // 通知协议层
+#if CONFIG_USE_JOYINSIDE_PROTOCOL
+    if (protocol_) {
+        auto joyinside = static_cast<JoyInsideProtocol*>(protocol_.get());
+        joyinside->SetManualMode(enabled);
+    }
+#endif
+}
+
+void Application::SendAudioFinish() {
+#if CONFIG_USE_JOYINSIDE_PROTOCOL
+    if (protocol_ && manual_mode_) {
+        auto joyinside = static_cast<JoyInsideProtocol*>(protocol_.get());
+        joyinside->SendAudioFinish();
+    }
+#endif
 }

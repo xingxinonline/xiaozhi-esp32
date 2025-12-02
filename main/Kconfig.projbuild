@@ -629,10 +629,61 @@ config CUSTOM_WAKE_WORD_THRESHOLD
 
 config SEND_WAKE_WORD_DATA
     bool "Send Wake Word Data"
-    default y
+    default n
     depends on USE_AFE_WAKE_WORD || USE_CUSTOM_WAKE_WORD
     help
         Send wake word data to the server as the first message of the conversation and wait for response
+
+choice WAKE_WORD_BUFFER_DURATION
+    prompt "Wake Word Buffer Duration (ms)"
+    default WAKE_WORD_BUFFER_1000MS
+    depends on SEND_WAKE_WORD_DATA
+    help
+        唤醒词音频缓冲时长。较长的缓冲可以捕获更多上下文（如唤醒词后的内容），
+        但会增加编码时间。建议根据实际使用场景调整。
+        
+        Wake word audio buffer duration. Longer buffer captures more context
+        (e.g., content after wake word), but increases encoding time.
+
+    config WAKE_WORD_BUFFER_500MS
+        bool "500 ms (最快，可能丢字)"
+        help
+            500ms 缓冲，约 16 包，编码约 130ms。
+            适合唤醒词较短的场景，可能丢失唤醒词后的内容。
+
+    config WAKE_WORD_BUFFER_750MS
+        bool "750 ms (较快)"
+        help
+            750ms 缓冲，约 25 包，编码约 200ms。
+            适合对延迟敏感的场景。
+
+    config WAKE_WORD_BUFFER_1000MS
+        bool "1000 ms (默认)"
+        help
+            1000ms 缓冲，约 33 包，编码约 260ms。
+            平衡延迟和上下文捕获。
+
+    config WAKE_WORD_BUFFER_1500MS
+        bool "1500 ms (推荐连续对话)"
+        help
+            1500ms 缓冲，约 50 包，编码约 400ms。
+            适合连续对话场景，能捕获唤醒词后 0.5 秒内容。
+
+    config WAKE_WORD_BUFFER_2000MS
+        bool "2000 ms (最完整)"
+        help
+            2000ms 缓冲，约 66 包，编码约 530ms。
+            捕获最完整的上下文，但延迟较高。
+endchoice
+
+config WAKE_WORD_BUFFER_MS
+    int
+    default 500 if WAKE_WORD_BUFFER_500MS
+    default 750 if WAKE_WORD_BUFFER_750MS
+    default 1000 if WAKE_WORD_BUFFER_1000MS
+    default 1500 if WAKE_WORD_BUFFER_1500MS
+    default 2000 if WAKE_WORD_BUFFER_2000MS
+    default 1000
 
 config USE_AUDIO_PROCESSOR
     bool "Enable Audio Noise Reduction"
@@ -677,6 +728,176 @@ config USE_ACOUSTIC_WIFI_PROVISIONING
     default n
     help
         Enable acoustic WiFi provisioning, use audio signal to transmit WiFi configuration data
+
+menu "JoyInside Protocol (附身智能)"
+    config USE_JOYINSIDE_PROTOCOL
+        bool "Enable JoyInside Protocol"
+        default n
+        depends on BOARD_TYPE_LICHUANG_DEV_S3
+        help
+            启用 JoyInside (附身智能) 自由对话协议。
+            该协议支持云端 VAD 检测和自动打断功能。
+            
+            Enable JoyInside free voice chat protocol.
+            This protocol supports cloud-based VAD and automatic barge-in.
+
+    choice JOYINSIDE_AUTH_MODE
+        prompt "Authentication Mode"
+        default JOYINSIDE_AUTH_AK_SK
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            选择 JoyInside 认证方式。
+            
+            Select JoyInside authentication mode.
+
+        config JOYINSIDE_AUTH_AK_SK
+            bool "AK/SK Signature (推荐)"
+            help
+                使用 AccessKey ID 和 AccessKey Secret 签名认证。
+                支持自动获取和刷新 Token。
+                
+                Use AccessKey ID and AccessKey Secret for signature authentication.
+                Supports automatic token fetching and refresh.
+
+        config JOYINSIDE_AUTH_TOKEN
+            bool "Static Token (手动)"
+            help
+                使用静态 Bearer Token 认证。
+                需要手动获取和更新 Token。
+                
+                Use static Bearer Token authentication.
+                Token must be manually obtained and updated.
+    endchoice
+
+    menu "AK/SK Configuration"
+        depends on JOYINSIDE_AUTH_AK_SK
+
+        config JOYINSIDE_ACCESS_KEY
+            string "Access Key ID"
+            default ""
+            help
+                AccessKey ID，从 https://joy-inside.jd.com "我的" 页面获取。
+                
+                AccessKey ID from JoyInside platform.
+
+        config JOYINSIDE_ACCESS_KEY_SECRET
+            string "Access Key Secret"
+            default ""
+            help
+                AccessKey Secret，从 https://joy-inside.jd.com "我的" 页面获取。
+                注意：此密钥请妥善保管，不要泄露。
+                
+                AccessKey Secret from JoyInside platform.
+                WARNING: Keep this secret safe, do not expose it.
+
+        config JOYINSIDE_VENDOR_ID
+            int "Vendor ID"
+            default 100090
+            help
+                厂商 ID，默认 100090。
+                
+                Vendor ID, default 100090.
+
+        config JOYINSIDE_APP_ID
+            string "App ID"
+            default ""
+            help
+                应用 ID。
+                
+                Application ID.
+    endmenu
+
+    config JOYINSIDE_BOT_ID
+        string "Bot ID (设备唯一标识)"
+        default ""
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            设备唯一标识，同一 Bot ID 只能建立一个 WebSocket 连接。
+            留空则使用设备 MAC 地址。
+            
+            Device unique identifier. Same Bot ID can only have one WebSocket connection.
+            Leave empty to use device MAC address.
+
+    config JOYINSIDE_ACCESS_TOKEN
+        string "Access Token (静态 Token)"
+        default ""
+        depends on JOYINSIDE_AUTH_TOKEN
+        help
+            JoyInside 平台的访问令牌 (Bearer Token)。
+            需要手动从平台获取。
+            
+            Access token from JoyInside platform.
+            Must be manually obtained.
+
+    config JOYINSIDE_USER_ID
+        string "User ID"
+        default "esp32_user"
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            用户标识，用于区分不同用户的会话。
+            
+            User identifier for session management.
+
+    config JOYINSIDE_HEARTBEAT_INTERVAL_MS
+        int "Heartbeat Interval (ms)"
+        default 15000
+        range 5000 30000
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            心跳发送间隔 (毫秒)。建议 10-30 秒。
+            
+            Heartbeat interval in milliseconds. Recommended 10-30 seconds.
+
+    config JOYINSIDE_IDLE_TIMEOUT_SEC
+        int "Idle Timeout (seconds)"
+        default 300
+        range 0 3600
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            空闲超时时间 (秒)。在 IDLE 状态下超过此时间后，
+            将关闭音频通道但保持 WebSocket 连接。
+            设为 0 表示禁用此功能（永不超时）。
+            
+            Idle timeout in seconds. After being idle for this duration,
+            the audio channel will be closed but WebSocket connection kept.
+            Set to 0 to disable (never timeout).
+
+    config JOYINSIDE_PREBUFFER_FRAMES
+        int "Pre-buffer Frames"
+        default 3
+        range 1 10
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            TTS 播放前预缓冲的帧数。每帧 60ms，3 帧 = 180ms。
+            增加帧数可提高抗网络抖动能力，但会增加延迟。
+            
+            Number of frames to buffer before TTS playback.
+            Each frame is 60ms, so 3 frames = 180ms latency.
+
+    config JOYINSIDE_ENABLE_CONTINUOUS_RECORDING
+        bool "Enable Continuous Recording (云端 VAD)"
+        default y
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            启用持续录音模式，配合云端 VAD 自动检测语音。
+            禁用此选项则使用按键控制录音。
+            
+            Enable continuous recording mode with cloud-based VAD.
+            Disable to use button-triggered recording.
+
+    config JOYINSIDE_USE_BINARY_MODE
+        bool "Use Binary Mode for Audio (推荐)"
+        default y
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            使用 WebSocket 二进制模式发送音频数据。
+            相比 Base64 JSON 模式，二进制模式效率更高，减少约 33% 带宽。
+            参考 JoyInside C++ SDK 实现。
+            
+            Use WebSocket binary mode for audio transmission.
+            More efficient than Base64 JSON mode, saves ~33% bandwidth.
+            Reference: JoyInside C++ SDK.
+endmenu
 
 config RECEIVE_CUSTOM_MESSAGE
     bool "Enable Custom Message Reception"
