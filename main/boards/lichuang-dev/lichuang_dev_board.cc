@@ -105,22 +105,54 @@ private:
     }
 
     void InitializeButtons() {
+        // 短按：音量 +10%（到顶后循环回 10%）
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
+            // 如果在启动阶段且未连接 WiFi，重置 WiFi 配置
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
                 ResetWifiConfiguration();
+                return;
             }
-            app.ToggleChatState();
+            
+            auto codec = GetAudioCodec();
+            if (codec) {
+                int volume = codec->output_volume() + 10;
+                if (volume > 100) {
+                    volume = 10;  // 循环回最小
+                }
+                codec->SetOutputVolume(volume);
+                ESP_LOGI(TAG, "Volume: %d%%", volume);
+                auto display = GetDisplay();
+                if (display) {
+                    display->ShowNotification("音量: " + std::to_string(volume) + "%");
+                    display->UpdateStatusBar();  // 立即更新状态栏
+                }
+            }
         });
 
-#if CONFIG_USE_DEVICE_AEC
+        // 双击：音量 -10%（最低到 0%）
         boot_button_.OnDoubleClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateIdle) {
-                app.SetAecMode(app.GetAecMode() == kAecOff ? kAecOnDeviceSide : kAecOff);
+            auto codec = GetAudioCodec();
+            if (codec) {
+                int volume = codec->output_volume() - 10;
+                if (volume < 0) {
+                    volume = 0;  // 最低静音
+                }
+                codec->SetOutputVolume(volume);
+                ESP_LOGI(TAG, "Volume: %d%%", volume);
+                auto display = GetDisplay();
+                if (display) {
+                    display->ShowNotification("音量: " + std::to_string(volume) + "%");
+                    display->UpdateStatusBar();  // 立即更新状态栏
+                }
             }
         });
-#endif
+
+        // 长按：唤醒/开始对话
+        boot_button_.OnLongPress([this]() {
+            auto& app = Application::GetInstance();
+            app.ToggleChatState();
+        });
     }
 
     void InitializeSt7789Display() {
