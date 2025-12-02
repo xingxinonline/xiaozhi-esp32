@@ -34,6 +34,8 @@ protected:
     lv_obj_t *notification_label_ = nullptr;
     lv_obj_t *mute_label_ = nullptr;
     lv_obj_t *battery_label_ = nullptr;
+    lv_obj_t *rssi_label_ = nullptr;     // WiFi 信号强度标签
+    lv_obj_t *volume_label_ = nullptr;   // 音量标签
     lv_obj_t* low_battery_popup_ = nullptr;
     lv_obj_t* low_battery_label_ = nullptr;
     

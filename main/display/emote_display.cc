@@ -23,6 +23,8 @@
 #include "assets.h"
 #include "assets/lang_config.h"
 #include "board.h"
+#include "audio_codec.h"
+#include <wifi_station.h>
 #include "gfx.h"
 
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
@@ -39,6 +41,8 @@ static const char* TAG = "EmoteDisplay";
 #define UI_ELEMENT_EYE_ANIM      "eye_anim"
 #define UI_ELEMENT_TOAST_LABEL   "toast_label"
 #define UI_ELEMENT_CLOCK_LABEL   "clock_label"
+#define UI_ELEMENT_WIFI_RSSI     "wifi_rssi"
+#define UI_ELEMENT_VOLUME        "volume"
 #define UI_ELEMENT_LISTEN_ANIM   "listen_anim"
 #define UI_ELEMENT_STATUS_ICON   "status_icon"
 
@@ -63,6 +67,8 @@ static gfx_obj_t* g_obj_label_clock = nullptr;
 static gfx_obj_t* g_obj_anim_eye = nullptr;
 static gfx_obj_t* g_obj_anim_listen = nullptr;
 static gfx_obj_t* g_obj_img_status = nullptr;
+static gfx_obj_t* g_obj_label_wifi_rssi = nullptr;   // WiFi 信号强度标签
+static gfx_obj_t* g_obj_label_volume = nullptr;      // 音量标签
 
 // Track current icon to determine when to show time
 static std::string g_current_icon_type = ICON_WIFI_FAILED;
@@ -264,6 +270,26 @@ static void SetupUI(const gfx_handle_t engine_handle, EmoteDisplay* const displa
 
     g_obj_img_status = gfx_img_create(engine_handle);
     gfx_obj_align(g_obj_img_status, GFX_ALIGN_TOP_MID, -120, 18);
+
+    // WiFi 信号强度标签（WiFi 图标右侧）
+    g_obj_label_wifi_rssi = gfx_label_create(engine_handle);
+    gfx_obj_align(g_obj_label_wifi_rssi, GFX_ALIGN_TOP_MID, -85, 18);  // WiFi 图标右侧
+    gfx_obj_set_size(g_obj_label_wifi_rssi, 50, 20);
+    gfx_label_set_text(g_obj_label_wifi_rssi, "");
+    gfx_label_set_color(g_obj_label_wifi_rssi, GFX_COLOR_HEX(0xAAAAAA));  // 灰色
+    gfx_label_set_text_align(g_obj_label_wifi_rssi, GFX_TEXT_ALIGN_LEFT);
+    gfx_label_set_font(g_obj_label_wifi_rssi, (gfx_font_t)&BUILTIN_TEXT_FONT);
+    gfx_obj_set_visible(g_obj_label_wifi_rssi, false);
+
+    // 音量标签（右上角）
+    g_obj_label_volume = gfx_label_create(engine_handle);
+    gfx_obj_align(g_obj_label_volume, GFX_ALIGN_TOP_RIGHT, -10, 18);  // 右上角
+    gfx_obj_set_size(g_obj_label_volume, 50, 20);
+    gfx_label_set_text(g_obj_label_volume, "");
+    gfx_label_set_color(g_obj_label_volume, GFX_COLOR_HEX(0xAAAAAA));  // 灰色
+    gfx_label_set_text_align(g_obj_label_volume, GFX_TEXT_ALIGN_RIGHT);
+    gfx_label_set_font(g_obj_label_volume, (gfx_font_t)&BUILTIN_TEXT_FONT);
+    gfx_obj_set_visible(g_obj_label_volume, true);
 
     SetUIDisplayMode(UIDisplayMode::SHOW_TIPS, display);
 }
@@ -475,8 +501,31 @@ void EmoteDisplay::UpdateStatusBar(bool update_all)
         return;
     }
 
-    // Only display time when battery icon is shown
     DisplayLockGuard lock(this);
+    
+    // 更新 WiFi 信号强度
+    auto& wifi = WifiStation::GetInstance();
+    if (wifi.IsConnected()) {
+        int rssi = wifi.GetRssi();
+        char rssi_str[8];
+        snprintf(rssi_str, sizeof(rssi_str), "%d", rssi);
+        gfx_label_set_text(g_obj_label_wifi_rssi, rssi_str);
+        gfx_obj_set_visible(g_obj_label_wifi_rssi, true);
+    } else {
+        gfx_obj_set_visible(g_obj_label_wifi_rssi, false);
+    }
+    
+    // 更新音量显示
+    auto& board = Board::GetInstance();
+    auto codec = board.GetAudioCodec();
+    if (codec) {
+        int volume = codec->output_volume();
+        char vol_str[8];
+        snprintf(vol_str, sizeof(vol_str), "%d%%", volume);
+        gfx_label_set_text(g_obj_label_volume, vol_str);
+    }
+
+    // Only display time when battery icon is shown
     if (g_current_icon_type == ICON_BATTERY) {
         time_t now;
         struct tm timeinfo;
@@ -489,7 +538,6 @@ void EmoteDisplay::UpdateStatusBar(bool update_all)
         char time_str[6];
         snprintf(time_str, sizeof(time_str), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
 
-        DisplayLockGuard lock(this);
         gfx_label_set_text(g_obj_label_clock, time_str);
         SetUIDisplayMode(UIDisplayMode::SHOW_TIME, this);
     }

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <font_awesome.h>
+#include <wifi_station.h>
 
 #include "lvgl_display.h"
 #include "board.h"
@@ -103,7 +104,7 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
     auto& board = Board::GetInstance();
     auto codec = board.GetAudioCodec();
 
-    // Update mute icon
+    // Update mute icon and rssi labels
     {
         DisplayLockGuard lock(this);
         if (mute_label_ == nullptr) {
@@ -117,6 +118,23 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
         } else if (codec->output_volume() > 0 && muted_) {
             muted_ = false;
             lv_label_set_text(mute_label_, "");
+        }
+
+        // Update WiFi RSSI label
+        if (rssi_label_ != nullptr) {
+            auto& wifi = WifiStation::GetInstance();
+            if (wifi.IsConnected()) {
+                char rssi_str[8];
+                snprintf(rssi_str, sizeof(rssi_str), "%d", wifi.GetRssi());
+                lv_label_set_text(rssi_label_, rssi_str);
+            } else {
+                lv_label_set_text(rssi_label_, "");
+            }
+        }
+
+        // 隐藏音量标签（某些板子音量读取不正确）
+        if (volume_label_ != nullptr && !lv_obj_has_flag(volume_label_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(volume_label_, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
@@ -174,6 +192,12 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
                     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
                 }
             }
+        }
+    } else {
+        // 没有电池，隐藏电池标签
+        DisplayLockGuard lock(this);
+        if (battery_label_ != nullptr && !lv_obj_has_flag(battery_label_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(battery_label_, LV_OBJ_FLAG_HIDDEN);
         }
     }
 

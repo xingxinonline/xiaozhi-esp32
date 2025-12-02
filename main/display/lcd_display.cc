@@ -12,6 +12,7 @@
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
 #include <cstring>
+#include <wifi_station.h>
 
 #include "board.h"
 
@@ -396,11 +397,26 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_flex_align(top_bar_, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(top_bar_, LV_SCROLLBAR_MODE_OFF);
 
-    // Left icon
-    network_label_ = lv_label_create(top_bar_);
+    // Left icons container (network + rssi)
+    lv_obj_t* left_icons = lv_obj_create(top_bar_);
+    lv_obj_set_size(left_icons, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(left_icons, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(left_icons, 0, 0);
+    lv_obj_set_style_pad_all(left_icons, 0, 0);
+    lv_obj_set_flex_flow(left_icons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left_icons, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    network_label_ = lv_label_create(left_icons);
     lv_label_set_text(network_label_, "");
     lv_obj_set_style_text_font(network_label_, icon_font, 0);
     lv_obj_set_style_text_color(network_label_, lvgl_theme->text_color(), 0);
+
+    // WiFi RSSI label (next to network icon)
+    rssi_label_ = lv_label_create(left_icons);
+    lv_label_set_text(rssi_label_, "");
+    lv_obj_set_style_text_font(rssi_label_, text_font, 0);
+    lv_obj_set_style_text_color(rssi_label_, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_margin_left(rssi_label_, lvgl_theme->spacing(1), 0);
 
     // Right icons container
     lv_obj_t* right_icons = lv_obj_create(top_bar_);
@@ -415,6 +431,13 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(mute_label_, "");
     lv_obj_set_style_text_font(mute_label_, icon_font, 0);
     lv_obj_set_style_text_color(mute_label_, lvgl_theme->text_color(), 0);
+
+    // Volume label
+    volume_label_ = lv_label_create(right_icons);
+    lv_label_set_text(volume_label_, "");
+    lv_obj_set_style_text_font(volume_label_, text_font, 0);
+    lv_obj_set_style_text_color(volume_label_, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_margin_left(volume_label_, lvgl_theme->spacing(1), 0);
 
     battery_label_ = lv_label_create(right_icons);
     lv_label_set_text(battery_label_, "");
@@ -436,7 +459,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, 0);  // Overlap with top_bar_
 
     notification_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.8);
+    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.50);  // 缩小宽度避免与两侧图标重叠
     lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(notification_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(notification_label_, "");
@@ -444,7 +467,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
     status_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(status_label_, LV_HOR_RES * 0.8);
+    lv_obj_set_width(status_label_, LV_HOR_RES * 0.50);  // 缩小宽度避免与两侧图标重叠
     lv_label_set_long_mode(status_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
@@ -832,11 +855,26 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_scrollbar_mode(top_bar_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
 
-    // Left icon
-    network_label_ = lv_label_create(top_bar_);
+    // Left icons container (network + rssi)
+    lv_obj_t* left_icons = lv_obj_create(top_bar_);
+    lv_obj_set_size(left_icons, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(left_icons, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(left_icons, 0, 0);
+    lv_obj_set_style_pad_all(left_icons, 0, 0);
+    lv_obj_set_flex_flow(left_icons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left_icons, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    network_label_ = lv_label_create(left_icons);
     lv_label_set_text(network_label_, "");
     lv_obj_set_style_text_font(network_label_, icon_font, 0);
     lv_obj_set_style_text_color(network_label_, lvgl_theme->text_color(), 0);
+
+    // WiFi RSSI label
+    rssi_label_ = lv_label_create(left_icons);
+    lv_label_set_text(rssi_label_, "");
+    lv_obj_set_style_text_font(rssi_label_, text_font, 0);
+    lv_obj_set_style_text_color(rssi_label_, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_margin_left(rssi_label_, lvgl_theme->spacing(1), 0);
 
     // Right icons container
     lv_obj_t* right_icons = lv_obj_create(top_bar_);
@@ -851,6 +889,13 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(mute_label_, "");
     lv_obj_set_style_text_font(mute_label_, icon_font, 0);
     lv_obj_set_style_text_color(mute_label_, lvgl_theme->text_color(), 0);
+
+    // Volume label
+    volume_label_ = lv_label_create(right_icons);
+    lv_label_set_text(volume_label_, "");
+    lv_obj_set_style_text_font(volume_label_, text_font, 0);
+    lv_obj_set_style_text_color(volume_label_, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_margin_left(volume_label_, lvgl_theme->spacing(1), 0);
 
     battery_label_ = lv_label_create(right_icons);
     lv_label_set_text(battery_label_, "");
@@ -872,7 +917,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, 0);  // Overlap with top_bar_
 
     notification_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.75);
+    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.50);  // 缩小宽度避免与两侧图标重叠
     lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(notification_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(notification_label_, "");
@@ -880,7 +925,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
     status_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(status_label_, LV_HOR_RES * 0.75);
+    lv_obj_set_width(status_label_, LV_HOR_RES * 0.50);  // 缩小宽度避免与两侧图标重叠
     lv_label_set_long_mode(status_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
