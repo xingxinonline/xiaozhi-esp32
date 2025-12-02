@@ -14,6 +14,10 @@
 #define AUDIO_CODEC_DMA_DESC_NUM 6
 #define AUDIO_CODEC_DMA_FRAME_NUM 240
 
+#ifndef AUDIO_DEFAULT_OUTPUT_VOLUME
+#define AUDIO_DEFAULT_OUTPUT_VOLUME 70
+#endif
+
 class AudioCodec {
 public:
     AudioCodec();
@@ -51,7 +55,7 @@ protected:
     int output_sample_rate_ = 0;
     int input_channels_ = 1;
     int output_channels_ = 1;
-    int output_volume_ = 70;
+    int output_volume_ = AUDIO_DEFAULT_OUTPUT_VOLUME;
     float input_gain_ = 0.0;
 
     virtual int Read(int16_t* dest, int samples) = 0;
