@@ -186,22 +186,22 @@ esp_err_t Ota::CheckVersion() {
     cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
     if (cJSON_IsObject(server_time)) {
         cJSON *timestamp = cJSON_GetObjectItem(server_time, "timestamp");
-        cJSON *timezone_offset = cJSON_GetObjectItem(server_time, "timezone_offset");
+        // 注意：timezone_offset 仅用于显示，不应用于设置系统时间
+        // 系统时间应始终保持 UTC，显示时再转换
         
         if (cJSON_IsNumber(timestamp)) {
-            // 设置系统时间
+            // 设置系统时间（UTC，不加时区偏移）
             struct timeval tv;
             double ts = timestamp->valuedouble;
             
-            // 如果有时区偏移，计算本地时间
-            if (cJSON_IsNumber(timezone_offset)) {
-                ts += (timezone_offset->valueint * 60 * 1000); // 转换分钟为毫秒
-            }
+            // 不要添加时区偏移！系统时间必须是 UTC
+            // gettimeofday() 返回的是 UTC 时间戳，用于 API 签名等
             
             tv.tv_sec = (time_t)(ts / 1000);  // 转换毫秒为秒
             tv.tv_usec = (suseconds_t)((long long)ts % 1000) * 1000;  // 剩余的毫秒转换为微秒
             settimeofday(&tv, NULL);
             has_server_time_ = true;
+            ESP_LOGI(TAG, "System time set to UTC: %lld ms", (long long)ts);
         }
     } else {
         ESP_LOGW(TAG, "No server_time section found!");
