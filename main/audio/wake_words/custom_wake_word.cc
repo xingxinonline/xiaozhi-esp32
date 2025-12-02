@@ -196,8 +196,10 @@ size_t CustomWakeWord::GetFeedSize() {
 void CustomWakeWord::StoreWakeWordData(const std::vector<int16_t>& data) {
     // store audio data to wake_word_pcm_
     wake_word_pcm_.push_back(data);
-    // keep about 2 seconds of data, detect duration is 30ms (sample_rate == 16000, chunksize == 512)
-    while (wake_word_pcm_.size() > 2000 / 30) {
+    // keep configured duration of data
+    // detect duration is 30ms (sample_rate == 16000, chunksize == 512)
+    constexpr int buffer_ms = CONFIG_WAKE_WORD_BUFFER_MS;
+    while (wake_word_pcm_.size() > buffer_ms / 30) {
         wake_word_pcm_.pop_front();
     }
 }
