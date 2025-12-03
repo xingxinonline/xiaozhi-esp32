@@ -9,6 +9,9 @@ set(PROJECT_VER "2.0.5")
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
 
+# Add pimchip_components to the component search path
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/pimchip_components")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 

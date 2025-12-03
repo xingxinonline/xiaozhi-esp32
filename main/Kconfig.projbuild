@@ -198,6 +198,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_LICHUANG_DEV_S3
         bool "立创·实战派 ESP32-S3"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_LANDOUBAO_DEV
+        bool "蓝豆包 ESP32-S3"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_LICHUANG_DEV_C3
         bool "立创·实战派 ESP32-C3"
         depends on IDF_TARGET_ESP32C3
@@ -696,7 +699,7 @@ config USE_DEVICE_AEC
     bool "Enable Device-Side AEC"
     default n
         depends on USE_AUDIO_PROCESSOR && (BOARD_TYPE_ESP_BOX_3 || BOARD_TYPE_ESP_BOX || BOARD_TYPE_ESP_BOX_LITE \
-        || BOARD_TYPE_LICHUANG_DEV_S3 || BOARD_TYPE_ESP_KORVO2_V3 || BOARD_TYPE_WAVESHARE_S3_TOUCH_AMOLED_1_75 || BOARD_TYPE_WAVESHARE_S3_TOUCH_LCD_1_83\
+        || BOARD_TYPE_LICHUANG_DEV_S3 || BOARD_TYPE_LANDOUBAO_DEV || BOARD_TYPE_ESP_KORVO2_V3 || BOARD_TYPE_WAVESHARE_S3_TOUCH_AMOLED_1_75 || BOARD_TYPE_WAVESHARE_S3_TOUCH_LCD_1_83\
         || BOARD_TYPE_WAVESHARE_S3_TOUCH_AMOLED_2_06 || BOARD_TYPE_WAVESHARE_S3_TOUCH_LCD_4B || BOARD_TYPE_WAVESHARE_P4_WIFI6_TOUCH_LCD_4B || BOARD_TYPE_WAVESHARE_P4_WIFI6_TOUCH_LCD_7B \
         || BOARD_TYPE_WAVESHARE_P4_WIFI6_TOUCH_LCD_XC || BOARD_TYPE_ESP_S3_LCD_EV_Board_2 || BOARD_TYPE_YUNLIAO_S3 \
         || BOARD_TYPE_ECHOEAR || BOARD_TYPE_WAVESHARE_S3_TOUCH_LCD_3_49)
@@ -729,11 +732,19 @@ config USE_ACOUSTIC_WIFI_PROVISIONING
     help
         Enable acoustic WiFi provisioning, use audio signal to transmit WiFi configuration data
 
+config USE_BLE_WIFI_PROVISIONING
+    bool "Enable Bluetooth WiFi Provisioning (蓝牙配网)"
+    default n
+    help
+        Enable Bluetooth WiFi provisioning using BluFi protocol.
+        Use smartphone app to configure WiFi credentials via BLE.
+        启用蓝牙配网功能，使用手机 APP 通过蓝牙配置 WiFi。
+
 menu "JoyInside Protocol (附身智能)"
     config USE_JOYINSIDE_PROTOCOL
         bool "Enable JoyInside Protocol"
         default n
-        depends on BOARD_TYPE_LICHUANG_DEV_S3
+        depends on BOARD_TYPE_LICHUANG_DEV_S3 || BOARD_TYPE_LANDOUBAO_DEV
         help
             启用 JoyInside (附身智能) 自由对话协议。
             该协议支持云端 VAD 检测和自动打断功能。
