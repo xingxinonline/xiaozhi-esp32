@@ -403,9 +403,28 @@ void Application::Start() {
     // Check for new assets version
     CheckAssetsVersion();
 
+#if CONFIG_USE_JOYINSIDE_PROTOCOL
+    // JoyInside 协议：暂时跳过 OTA 检查，但需要等待 SNTP 同步完成
+    ESP_LOGI(TAG, "JoyInside protocol enabled, skipping OTA check");
+    
+    // 等待 SNTP 时间同步（最多等待 10 秒）
+    display->SetStatus(Lang::Strings::PLEASE_WAIT);
+    const int MAX_SNTP_WAIT_SEC = 10;
+    for (int i = 0; i < MAX_SNTP_WAIT_SEC; i++) {
+        if (JoyInsideIsTimeSynced()) {
+            ESP_LOGI(TAG, "SNTP time synced after %d seconds", i);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (!JoyInsideIsTimeSynced()) {
+        ESP_LOGW(TAG, "SNTP sync timeout, will retry on wake word");
+    }
+#else
     // Check for new firmware version or get the MQTT broker address
     Ota ota;
     CheckNewVersion(ota);
+#endif
 
     // Initialize the protocol
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
@@ -446,7 +465,18 @@ void Application::Start() {
 #endif
 
     protocol_->OnConnected([this]() {
+        // 重连成功时播放成功提示音
+        ESP_LOGI(TAG, "Network reconnected, playing success sound");
         DismissAlert();
+        audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+    });
+
+    protocol_->OnDisconnected([this]() {
+        // 网络断开时立即播放警告提示音，让用户感知到网络状态变化
+        ESP_LOGW(TAG, "Network disconnected, playing warning sound");
+        // 先清空现有音频队列，确保警告音能立即播放
+        audio_service_.ResetDecoder();
+        audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
     });
 
     protocol_->OnNetworkError([this](const std::string& message) {
@@ -567,6 +597,15 @@ void Application::Start() {
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
+#if CONFIG_USE_JOYINSIDE_PROTOCOL
+    has_server_time_ = false;  // JoyInside 协议不依赖 OTA 服务器时间
+    if (protocol_started) {
+        display->ShowNotification(Lang::Strings::VERSION);
+        display->SetChatMessage("system", "");
+        // Play the success sound to indicate the device is ready
+        audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+    }
+#else
     has_server_time_ = ota.HasServerTime();
     if (protocol_started) {
         std::string message = std::string(Lang::Strings::VERSION) + ota.GetCurrentVersion();
@@ -575,6 +614,7 @@ void Application::Start() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     }
+#endif
 }
 
 // Add a async task to MainLoop
@@ -760,6 +800,19 @@ void Application::SetDeviceState(DeviceState state) {
         default:
             // Do nothing
             break;
+    }
+}
+
+void Application::OnNetworkReconnected() {
+    // WiFi 重连成功后，尝试重新建立协议预连接
+    if (protocol_ && device_state_ == kDeviceStateIdle) {
+        ESP_LOGI(TAG, "Network reconnected, re-establishing protocol connection...");
+        Schedule([this]() {
+            // 调用 Start() 来建立预连接
+            if (protocol_->Start()) {
+                ESP_LOGI(TAG, "Protocol pre-connection re-established");
+            }
+        });
     }
 }
 

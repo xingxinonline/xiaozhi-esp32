@@ -63,6 +63,7 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+    void OnNetworkReconnected();  // WiFi 重连成功后调用，触发协议预连接
     
     // 手动模式支持（用于 JoyInside 等协议）
     void SetManualMode(bool enabled);
