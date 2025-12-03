@@ -41,6 +41,7 @@ JoyInsideProtocol::JoyInsideProtocol()
       idle_timeout_timer_(nullptr),
       audio_channel_active_(false),
       reconnecting_(false),
+      was_disconnected_(false),
       dialog_state_(JoyInsideDialogState::kIdle),
       audio_frame_index_(0),
       prebuffering_(true),
@@ -126,6 +127,12 @@ bool JoyInsideProtocol::Start() {
     if (!InitializeConnection()) {
         ESP_LOGW(TAG, "Pre-connection failed, will retry on wake word");
         return true;  // 返回 true，允许后续重试
+    }
+    
+    // 如果之前断开过并且现在预连接成功，通知应用层播放成功音
+    if (was_disconnected_ && on_connected_) {
+        on_connected_();
+        was_disconnected_ = false;  // 重置标志
     }
     
     ESP_LOGI(TAG, "Pre-connection successful, ready for wake word");
@@ -235,10 +242,18 @@ bool JoyInsideProtocol::InitializeConnection() {
         StopHeartbeat();
         StopIdleTimeout();
         audio_channel_active_ = false;  // 标记音频通道关闭
+        was_disconnected_ = true;       // 标记曾经断开过
         SetDialogState(JoyInsideDialogState::kIdle);
-        // 如果正在重连中，不触发关闭回调（避免状态被错误重置）
-        if (!reconnecting_ && on_audio_channel_closed_) {
-            on_audio_channel_closed_();
+        ResetForNewRound();             // 重置会话状态，确保下次对话正常
+        // 如果正在重连中，不触发回调（避免多次触发）
+        if (!reconnecting_) {
+            // 通知应用层网络断开
+            if (on_disconnected_) {
+                on_disconnected_();
+            }
+            if (on_audio_channel_closed_) {
+                on_audio_channel_closed_();
+            }
         }
     });
     
@@ -328,6 +343,12 @@ bool JoyInsideProtocol::OpenAudioChannel() {
             reconnecting_ = false;
             SetError("连接 JoyInside 服务器失败");
             return false;
+        }
+        
+        // 如果之前断开过并且现在重连成功，通知应用层
+        if (was_disconnected_ && on_connected_) {
+            on_connected_();
+            was_disconnected_ = false;  // 重置标志
         }
     }
     

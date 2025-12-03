@@ -92,6 +92,7 @@ private:
     esp_timer_handle_t idle_timeout_timer_;
     bool audio_channel_active_;  // 音频通道是否激活（区别于 WebSocket 连接）
     bool reconnecting_;          // 正在重连中，断开回调不触发 on_audio_channel_closed_
+    bool was_disconnected_;      // 标记是否曾经断开过（用于判断是否需要播放重连成功音）
     
     // 对话状态
     std::atomic<JoyInsideDialogState> dialog_state_;
