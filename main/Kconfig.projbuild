@@ -874,6 +874,30 @@ menu "JoyInside Protocol (附身智能)"
             Number of frames to buffer before TTS playback.
             Each frame is 60ms, so 3 frames = 180ms latency.
 
+    config JOYINSIDE_VOICE_SPEED
+        int "TTS Voice Speed (x100)"
+        default 100
+        range 80 120
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            TTS 语音播放速度，范围 80-120，对应 0.8x - 1.2x。
+            100 表示正常速度 (1.0x)。
+            
+            TTS playback speed, range 80-120, corresponding to 0.8x - 1.2x.
+            100 means normal speed (1.0x).
+
+    config JOYINSIDE_VOICE_VOLUME
+        int "TTS Voice Volume (x10)"
+        default 50
+        range 5 100
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            TTS 语音音量，范围 5-100，对应 0.5 - 10.0。
+            50 表示默认音量 (5.0)。
+            
+            TTS voice volume, range 5-100, corresponding to 0.5 - 10.0.
+            50 means default volume (5.0).
+
     config JOYINSIDE_ENABLE_CONTINUOUS_RECORDING
         bool "Enable Continuous Recording (云端 VAD)"
         default y

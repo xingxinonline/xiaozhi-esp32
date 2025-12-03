@@ -548,8 +548,12 @@ bool JoyInsideProtocol::SendAudioConfig() {
     
     // 音色配置
     cJSON* timbre = cJSON_CreateObject();
-    cJSON_AddNumberToObject(timbre, "voiceSpeed", 1.0);
-    cJSON_AddNumberToObject(timbre, "voiceVolume", 1.0);
+    // 语速：CONFIG_JOYINSIDE_VOICE_SPEED (80-120) -> 0.8-1.2
+    float voice_speed = CONFIG_JOYINSIDE_VOICE_SPEED / 100.0f;
+    // 音量：CONFIG_JOYINSIDE_VOICE_VOLUME (5-100) -> 0.5-10.0
+    float voice_volume = CONFIG_JOYINSIDE_VOICE_VOLUME / 10.0f;
+    cJSON_AddNumberToObject(timbre, "voiceSpeed", voice_speed);
+    cJSON_AddNumberToObject(timbre, "voiceVolume", voice_volume);
     cJSON_AddItemToObject(audio, "timbre", timbre);
     
     cJSON_AddItemToObject(eventData, "audio", audio);
