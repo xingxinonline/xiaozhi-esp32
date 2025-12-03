@@ -17,6 +17,10 @@
 #include <ssid_manager.h>
 #include "afsk_demod.h"
 
+#if CONFIG_USE_BLE_WIFI_PROVISIONING
+#include <ble_configuration_wifi.h>
+#endif
+
 static const char *TAG = "WifiBoard";
 
 WifiBoard::WifiBoard() {
@@ -36,9 +40,36 @@ void WifiBoard::EnterWifiConfigMode() {
     auto& application = Application::GetInstance();
     application.SetDeviceState(kDeviceStateWifiConfiguring);
 
+#if CONFIG_USE_BLE_WIFI_PROVISIONING
+    // Use Bluetooth WiFi Provisioning (BluFi)
+    auto& ble_config = WifiConfigGATTsApp::GetInstance();
+    ble_config.SetLanguage(Lang::CODE);
+    ble_config.SetSsidPrefix("LanDouBao");
+    ble_config.SetDeviceId(SystemInfo::GetMacAddress());
+    ble_config.Start();
+
+    // Wait 1.5 seconds to display board information
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    // Display BLE WiFi configuration hint
+    std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
+    hint += ble_config.GetSsid();
+    hint += " (蓝牙配网)";
+    
+    // Announce WiFi configuration prompt
+    application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+    
+    ESP_LOGI(TAG, "BLE WiFi configuration started, device name: %s", ble_config.GetSsid().c_str());
+    
+    // Wait forever until reset after configuration
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+#else
+    // Use AP WiFi Provisioning (default)
     auto& wifi_ap = WifiConfigurationAp::GetInstance();
     wifi_ap.SetLanguage(Lang::CODE);
-    wifi_ap.SetSsidPrefix("Xiaozhi");
+    wifi_ap.SetSsidPrefix("LanDouBao");
     wifi_ap.Start();
 
     // Wait 1.5 seconds to display board information
@@ -68,6 +99,7 @@ void WifiBoard::EnterWifiConfigMode() {
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
+#endif
 }
 
 void WifiBoard::StartNetwork() {
@@ -103,6 +135,9 @@ void WifiBoard::StartNetwork() {
         std::string notification = Lang::Strings::CONNECTED_TO;
         notification += ssid;
         display->ShowNotification(notification.c_str(), 30000);
+        
+        // 通知 Application 网络已重连，触发协议预连接
+        Application::GetInstance().OnNetworkReconnected();
     });
     wifi_station.Start();
 
