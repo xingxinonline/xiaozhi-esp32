@@ -405,24 +405,9 @@ void Application::Start() {
     CheckAssetsVersion();
 
 #if CONFIG_USE_JOYINSIDE_PROTOCOL
-    // JoyInside 协议：暂时跳过 OTA 检查，但需要等待 SNTP 同步完成
+    // JoyInside 协议：跳过 OTA 检查
+    // SNTP 同步在 protocol->Start() 中处理
     ESP_LOGI(TAG, "JoyInside protocol enabled, skipping OTA check");
-    
-    // 等待 SNTP 时间同步（最多等待 10 秒）
-    display->SetStatus(Lang::Strings::PLEASE_WAIT);
-    const int MAX_SNTP_WAIT_SEC = 10;
-    bool sntp_synced = false;
-    for (int i = 0; i < MAX_SNTP_WAIT_SEC; i++) {
-        if (JoyInsideIsTimeSynced()) {
-            ESP_LOGI(TAG, "SNTP time synced after %d seconds", i);
-            sntp_synced = true;
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    if (!sntp_synced) {
-        ESP_LOGW(TAG, "SNTP sync timeout, will retry on wake word");
-    }
 #else
     // Check for new firmware version or get the MQTT broker address
     Ota ota;
@@ -529,7 +514,11 @@ void Application::Start() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
-                    if (device_state_ == kDeviceStateSpeaking) {
+                    // TTS 结束后，根据监听模式决定下一个状态
+                    // 注意：不只检查 Speaking 状态，因为 INTERRUPT 可能已经把状态切换了
+                    if (device_state_ == kDeviceStateSpeaking || 
+                        device_state_ == kDeviceStateListening ||
+                        device_state_ == kDeviceStateConnecting) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
                         } else {
