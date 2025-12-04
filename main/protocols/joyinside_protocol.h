@@ -90,9 +90,10 @@ private:
     
     // 空闲超时定时器（超时后关闭音频通道但保持连接）
     esp_timer_handle_t idle_timeout_timer_;
-    bool audio_channel_active_;  // 音频通道是否激活（区别于 WebSocket 连接）
-    bool reconnecting_;          // 正在重连中，断开回调不触发 on_audio_channel_closed_
-    bool was_disconnected_;      // 标记是否曾经断开过（用于判断是否需要播放重连成功音）
+    bool audio_channel_active_;       // 音频通道是否激活（区别于 WebSocket 连接）
+    bool reconnecting_;               // 正在重连中，断开回调不触发 on_audio_channel_closed_
+    bool was_disconnected_;           // 标记是否曾经断开过（用于判断是否需要播放重连成功音）
+    bool connection_established_;     // 标记首次连接是否成功（只有首次成功后的断开才播放警告音）
     
     // 对话状态
     std::atomic<JoyInsideDialogState> dialog_state_;

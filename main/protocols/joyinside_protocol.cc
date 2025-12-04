@@ -42,6 +42,7 @@ JoyInsideProtocol::JoyInsideProtocol()
       audio_channel_active_(false),
       reconnecting_(false),
       was_disconnected_(false),
+      connection_established_(false),
       dialog_state_(JoyInsideDialogState::kIdle),
       audio_frame_index_(0),
       prebuffering_(true),
@@ -186,8 +187,12 @@ std::string JoyInsideProtocol::GenerateMessageId() {
 bool JoyInsideProtocol::InitializeConnection() {
     // 清理旧连接（如果存在）
     if (websocket_) {
+        // 设置重连标志，避免 Close() 触发断开回调播放警告音
+        bool was_reconnecting = reconnecting_;
+        reconnecting_ = true;
         websocket_->Close();
         websocket_.reset();
+        reconnecting_ = was_reconnecting;  // 恢复原来的状态
         // 等待 SSL 资源完全释放，避免 mbedtls_ssl_fetch_input 错误
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -242,11 +247,13 @@ bool JoyInsideProtocol::InitializeConnection() {
         StopHeartbeat();
         StopIdleTimeout();
         audio_channel_active_ = false;  // 标记音频通道关闭
-        was_disconnected_ = true;       // 标记曾经断开过
         SetDialogState(JoyInsideDialogState::kIdle);
         ResetForNewRound();             // 重置会话状态，确保下次对话正常
-        // 如果正在重连中，不触发回调（避免多次触发）
-        if (!reconnecting_) {
+        
+        // 只有在非重连中且首次连接已成功时，才触发断开回调和设置标志
+        // 这样可以避免：1) 重连时的预期断开触发警告音 2) 首次连接前的断开触发警告音
+        if (!reconnecting_ && connection_established_) {
+            was_disconnected_ = true;   // 标记曾经断开过（用于后续重连成功时播放成功音）
             // 通知应用层网络断开
             if (on_disconnected_) {
                 on_disconnected_();
@@ -299,6 +306,9 @@ bool JoyInsideProtocol::InitializeConnection() {
     
     // 重置音频帧计数
     audio_frame_index_ = 0;
+    
+    // 标记首次连接已成功（只有成功后的断开才会触发警告音）
+    connection_established_ = true;
     
     ESP_LOGI(TAG, "JoyInside protocol initialized successfully");
     return true;

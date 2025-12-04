@@ -410,14 +410,16 @@ void Application::Start() {
     // 等待 SNTP 时间同步（最多等待 10 秒）
     display->SetStatus(Lang::Strings::PLEASE_WAIT);
     const int MAX_SNTP_WAIT_SEC = 10;
+    bool sntp_synced = false;
     for (int i = 0; i < MAX_SNTP_WAIT_SEC; i++) {
         if (JoyInsideIsTimeSynced()) {
             ESP_LOGI(TAG, "SNTP time synced after %d seconds", i);
+            sntp_synced = true;
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    if (!JoyInsideIsTimeSynced()) {
+    if (!sntp_synced) {
         ESP_LOGW(TAG, "SNTP sync timeout, will retry on wake word");
     }
 #else
