@@ -41,6 +41,12 @@ public:
                    const std::string& bot_id);
 
     /**
+     * @brief 配置 App ID（用于设备注册）
+     * @param app_id 应用空间唯一标识
+     */
+    void SetAppId(const std::string& app_id) { app_id_ = app_id; }
+
+    /**
      * @brief 获取 Access Token
      * 如果本地有有效 Token 则直接返回，否则调用 API 获取
      * @return Access Token，失败返回空字符串
@@ -63,12 +69,28 @@ public:
      */
     void SetStaticToken(const std::string& token);
 
+    /**
+     * @brief 注册设备
+     * 
+     * 调用设备注册 API 获取 Bot ID
+     * 参考：https://joyinside.jd.com/device/register
+     * 
+     * @param device_id 设备唯一标识（如 MAC 地址）
+     * @param device_type 设备类型: "APP_ROBOT"(测试) 或 "PHYSICAL_ROBOT"(生产)
+     * @param device_name 设备名称
+     * @return Bot ID，失败返回空字符串
+     */
+    std::string RegisterDevice(const std::string& device_id,
+                                const std::string& device_type,
+                                const std::string& device_name);
+
 private:
     // AK/SK 配置
     std::string access_key_;
     std::string access_key_secret_;
     int vendor_id_;
     std::string bot_id_;
+    std::string app_id_;
     
     // Token 管理
     std::string access_token_;
@@ -121,6 +143,17 @@ private:
      * @return HTTP 状态码，失败返回 -1
      */
     int HttpPost(const std::string& url, const std::string& json_body, std::string& response);
+    
+    /**
+     * @brief 带认证头的 HTTP POST 请求
+     * @param url 请求 URL
+     * @param json_body JSON 请求体
+     * @param token Bearer Token
+     * @param response 响应内容
+     * @return HTTP 状态码，失败返回 -1
+     */
+    int HttpPostWithAuth(const std::string& url, const std::string& json_body, 
+                          const std::string& token, std::string& response);
 };
 
 #endif // _JOYINSIDE_AUTH_H_

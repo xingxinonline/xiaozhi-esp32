@@ -16,6 +16,10 @@
 // JoyInside WebSocket 服务地址
 static const char* JOYINSIDE_WS_URL = "wss://joyinside.jd.com/soulmate/voiceChat/v1";
 
+// NVS 命名空间和键名（用于存储 Bot ID）
+static const char* NVS_NAMESPACE = "joyinside";
+static const char* NVS_KEY_BOT_ID = "bot_id";
+
 // 心跳间隔 (毫秒)
 #ifdef CONFIG_JOYINSIDE_HEARTBEAT_INTERVAL_MS
 static const uint32_t HEARTBEAT_INTERVAL_MS = CONFIG_JOYINSIDE_HEARTBEAT_INTERVAL_MS;
@@ -48,33 +52,42 @@ JoyInsideProtocol::JoyInsideProtocol()
       prebuffering_(true),
       use_binary_mode_(true),  // 默认使用二进制模式（参考 C++ SDK，效率更高）
       tts_started_(false),
-      manual_mode_(false) {
+      manual_mode_(false),
+      bot_id_ready_(false) {
     
     event_group_handle_ = xEventGroupCreate();
     
     // 从 Kconfig 读取配置
 #ifdef CONFIG_JOYINSIDE_BOT_ID
-    bot_id_ = CONFIG_JOYINSIDE_BOT_ID;
+    // 如果 Kconfig 中配置了 Bot ID，直接使用
+    std::string kconfig_bot_id = CONFIG_JOYINSIDE_BOT_ID;
+    if (!kconfig_bot_id.empty()) {
+        bot_id_ = kconfig_bot_id;
+        bot_id_ready_ = true;
+        ESP_LOGI(TAG, "Using Bot ID from Kconfig: %s", bot_id_.c_str());
+    }
 #endif
     
-#ifdef CONFIG_JOYINSIDE_USER_ID
-    user_id_ = CONFIG_JOYINSIDE_USER_ID;
-#else
-    user_id_ = "esp32_user";
-#endif
-
+    // 如果 Kconfig 中没有配置 Bot ID，尝试从 NVS 读取
+    if (bot_id_.empty()) {
+        Settings settings(NVS_NAMESPACE, false);
+        bot_id_ = settings.GetString(NVS_KEY_BOT_ID, "");
+        if (!bot_id_.empty()) {
+            bot_id_ready_ = true;
+            ESP_LOGI(TAG, "Loaded Bot ID from NVS: %s", bot_id_.c_str());
+        } else {
+            ESP_LOGI(TAG, "No Bot ID found, will register on first connection");
+        }
+    }
+    
 #ifdef CONFIG_JOYINSIDE_USE_BINARY_MODE
     use_binary_mode_ = CONFIG_JOYINSIDE_USE_BINARY_MODE;
 #else
     use_binary_mode_ = true;  // 默认启用二进制模式
 #endif
     
-    // 如果没有 bot_id，使用设备 MAC 地址
-    if (bot_id_.empty()) {
-        bot_id_ = SystemInfo::GetMacAddress();
-        // 移除冒号
-        bot_id_.erase(std::remove(bot_id_.begin(), bot_id_.end(), ':'), bot_id_.end());
-    }
+    // 使用设备 UUID 作为用户标识
+    user_id_ = Board::GetInstance().GetUuid();
     
     // 配置认证方式
 #ifdef CONFIG_JOYINSIDE_AUTH_AK_SK
@@ -97,7 +110,14 @@ JoyInsideProtocol::JoyInsideProtocol()
     int vendor_id = 100090;
     #endif
     
+    // 如果 bot_id_ 为空，先使用空字符串配置 auth_，后续注册时会更新
     auth_.Configure(access_key, access_key_secret, vendor_id, bot_id_);
+    
+    // 配置 App ID（用于设备注册）
+    #ifdef CONFIG_JOYINSIDE_APP_ID
+    auth_.SetAppId(CONFIG_JOYINSIDE_APP_ID);
+    #endif
+    
     ESP_LOGI(TAG, "Using AK/SK authentication");
 #else
     // 静态 Token 认证
@@ -195,6 +215,15 @@ bool JoyInsideProtocol::InitializeConnection() {
         reconnecting_ = was_reconnecting;  // 恢复原来的状态
         // 等待 SSL 资源完全释放，避免 mbedtls_ssl_fetch_input 错误
         vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    
+    // 如果 Bot ID 未就绪，先进行设备注册
+    if (!bot_id_ready_) {
+        ESP_LOGI(TAG, "Bot ID not ready, attempting device registration...");
+        if (!RegisterDeviceAndSaveBotId()) {
+            ESP_LOGE(TAG, "Device registration failed");
+            return false;
+        }
     }
     
     // 获取 Access Token
@@ -311,6 +340,81 @@ bool JoyInsideProtocol::InitializeConnection() {
     connection_established_ = true;
     
     ESP_LOGI(TAG, "JoyInside protocol initialized successfully");
+    return true;
+}
+
+bool JoyInsideProtocol::RegisterDeviceAndSaveBotId() {
+    /*
+     * 设备注册流程：
+     * 1. 使用设备 MAC 地址作为 deviceId
+     * 2. 根据配置选择设备类型 (APP_ROBOT/PHYSICAL_ROBOT)
+     * 3. 调用设备注册 API 获取 Bot ID
+     * 4. 将 Bot ID 存储到 NVS 中
+     * 5. 更新 auth_ 模块的 bot_id
+     */
+    
+    // 获取设备 UUID 作为 deviceId
+    std::string device_id = Board::GetInstance().GetUuid();
+    
+    // 获取设备类型
+#ifdef CONFIG_JOYINSIDE_DEVICE_TYPE_PRODUCTION
+    std::string device_type = "PHYSICAL_ROBOT";
+#else
+    std::string device_type = "APP_ROBOT";  // 默认测试设备
+#endif
+    
+    // 生成设备名称（与配网名称相同格式：LanDouBao-XXXX）
+    // 使用 MAC 地址最后 4 位作为设备标识
+    std::string mac = SystemInfo::GetMacAddress();
+    mac.erase(std::remove(mac.begin(), mac.end(), ':'), mac.end());
+    std::string device_name = "LanDouBao-" + mac.substr(mac.length() - 4);
+    
+    ESP_LOGI(TAG, "Registering device: deviceId=%s, type=%s, name=%s",
+             device_id.c_str(), device_type.c_str(), device_name.c_str());
+    
+    // 调用注册 API
+    std::string new_bot_id = auth_.RegisterDevice(device_id, device_type, device_name);
+    if (new_bot_id.empty()) {
+        ESP_LOGE(TAG, "Device registration failed, cannot obtain Bot ID");
+        return false;
+    }
+    
+    // 保存 Bot ID 到 NVS
+    {
+        Settings settings(NVS_NAMESPACE, true);
+        settings.SetString(NVS_KEY_BOT_ID, new_bot_id);
+        ESP_LOGI(TAG, "Bot ID saved to NVS: %s", new_bot_id.c_str());
+    }
+    
+    // 更新内部状态
+    bot_id_ = new_bot_id;
+    bot_id_ready_ = true;
+    
+    // 更新 auth_ 模块中的 bot_id（用于生成会话 ID 等）
+    // 注意：需要重新配置 auth_ 以使用新的 bot_id
+#ifdef CONFIG_JOYINSIDE_AUTH_AK_SK
+    #ifdef CONFIG_JOYINSIDE_ACCESS_KEY
+    std::string access_key = CONFIG_JOYINSIDE_ACCESS_KEY;
+    #else
+    std::string access_key;
+    #endif
+    
+    #ifdef CONFIG_JOYINSIDE_ACCESS_KEY_SECRET
+    std::string access_key_secret = CONFIG_JOYINSIDE_ACCESS_KEY_SECRET;
+    #else
+    std::string access_key_secret;
+    #endif
+    
+    #ifdef CONFIG_JOYINSIDE_VENDOR_ID
+    int vendor_id = CONFIG_JOYINSIDE_VENDOR_ID;
+    #else
+    int vendor_id = 100090;
+    #endif
+    
+    auth_.Configure(access_key, access_key_secret, vendor_id, bot_id_);
+#endif
+    
+    ESP_LOGI(TAG, "Device registration successful, Bot ID: %s", bot_id_.c_str());
     return true;
 }
 

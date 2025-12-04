@@ -16,6 +16,7 @@
 // API URLs
 static const char* URL_AUTH_GET_TOKEN = "https://joyinside.jd.com/auth/getToken";
 static const char* URL_AUTH_REFRESH_TOKEN = "https://joyinside.jd.com/auth/refreshToken";
+static const char* URL_DEVICE_REGISTER = "https://joyinside.jd.com/device/register";
 
 // Token 提前刷新时间 (5分钟)
 static const int64_t TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -245,8 +246,13 @@ bool JoyInsideAuth::FetchToken() {
     cJSON_AddStringToObject(root, "accessNonce", nonce.c_str());
     cJSON_AddStringToObject(root, "accessVersion", "V2");
     cJSON_AddStringToObject(root, "accessSign", sign.c_str());
-    cJSON_AddStringToObject(root, "botId", bot_id_.c_str());
-    // cJSON_AddNumberToObject(root, "vendorId", vendor_id_);
+    
+    // 如果有 botId 则使用 botId（设备 Token），否则使用 vendorId（厂商 Token）
+    if (!bot_id_.empty()) {
+        cJSON_AddStringToObject(root, "botId", bot_id_.c_str());
+    } else {
+        cJSON_AddNumberToObject(root, "vendorId", vendor_id_);
+    }
     
     char* json_str = cJSON_PrintUnformatted(root);
     std::string request_body = json_str;
@@ -454,6 +460,153 @@ int JoyInsideAuth::HttpPost(const std::string& url, const std::string& json_body
     
     ESP_LOGI(TAG, "Sending HTTP POST to %s", url.c_str());
     ESP_LOGD(TAG, "Request body: %s", json_body.c_str());
+    
+    esp_err_t err = esp_http_client_perform(client);
+    int status = -1;
+    
+    if (err == ESP_OK) {
+        status = esp_http_client_get_status_code(client);
+        response = std::string(http_response_buffer, http_response_len);
+        ESP_LOGI(TAG, "HTTP POST status=%d, response=%zu bytes", status, http_response_len);
+        if (status != 200) {
+            ESP_LOGW(TAG, "Response: %s", response.c_str());
+        }
+    } else {
+        ESP_LOGE(TAG, "HTTP POST failed: %s (0x%x)", esp_err_to_name(err), err);
+    }
+    
+    esp_http_client_cleanup(client);
+    return status;
+}
+
+std::string JoyInsideAuth::RegisterDevice(const std::string& device_id,
+                                           const std::string& device_type,
+                                           const std::string& device_name) {
+    /*
+     * 设备注册 API
+     * 参考: https://joyinside.jd.com/device/register
+     * 
+     * 请求参数:
+     * - vendorId: 厂商唯一标识
+     * - appId: 应用空间唯一标识
+     * - deviceId: 设备唯一标识
+     * - type: 设备类型 (PHYSICAL_ROBOT/APP_ROBOT)
+     * - name: 设备名称
+     * 
+     * 响应:
+     * - state: SUCCESS/FAILURE
+     * - data: Bot ID
+     */
+    
+    ESP_LOGI(TAG, "Registering device: deviceId=%s, type=%s, name=%s",
+             device_id.c_str(), device_type.c_str(), device_name.c_str());
+    
+    // 获取 Access Token（设备注册需要厂商 Token）
+    std::string token = GetAccessToken();
+    if (token.empty()) {
+        ESP_LOGE(TAG, "Failed to get access token for device registration");
+        return "";
+    }
+    
+    // 检查必要参数
+    if (app_id_.empty()) {
+        ESP_LOGE(TAG, "App ID not configured, cannot register device");
+        return "";
+    }
+    
+    // 构建注册请求
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "vendorId", vendor_id_);
+    cJSON_AddStringToObject(root, "appId", app_id_.c_str());
+    cJSON_AddStringToObject(root, "deviceId", device_id.c_str());
+    cJSON_AddStringToObject(root, "type", device_type.c_str());
+    cJSON_AddStringToObject(root, "name", device_name.c_str());
+    
+    char* json_str = cJSON_PrintUnformatted(root);
+    std::string request_body = json_str;
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    
+    ESP_LOGI(TAG, "Device register request: %s", request_body.c_str());
+    
+    // 发送带认证头的 HTTP POST 请求
+    std::string response;
+    int status = HttpPostWithAuth(URL_DEVICE_REGISTER, request_body, token, response);
+    
+    if (status != 200) {
+        ESP_LOGE(TAG, "Device registration failed, status=%d", status);
+        if (!response.empty()) {
+            ESP_LOGE(TAG, "Error response: %s", response.c_str());
+        }
+        return "";
+    }
+    
+    ESP_LOGI(TAG, "Device register response: %s", response.c_str());
+    
+    // 解析响应
+    cJSON* resp_root = cJSON_Parse(response.c_str());
+    if (!resp_root) {
+        ESP_LOGE(TAG, "Failed to parse device register response");
+        return "";
+    }
+    
+    // 检查状态
+    cJSON* state = cJSON_GetObjectItem(resp_root, "state");
+    if (!cJSON_IsString(state) || strcmp(state->valuestring, "SUCCESS") != 0) {
+        cJSON* result = cJSON_GetObjectItem(resp_root, "result");
+        cJSON* code = cJSON_GetObjectItem(resp_root, "code");
+        ESP_LOGE(TAG, "Device registration failed: state=%s, code=%s, result=%s",
+                 state ? state->valuestring : "null",
+                 code ? code->valuestring : "null",
+                 result ? result->valuestring : "null");
+        cJSON_Delete(resp_root);
+        return "";
+    }
+    
+    // 获取 Bot ID
+    cJSON* data = cJSON_GetObjectItem(resp_root, "data");
+    if (!cJSON_IsString(data)) {
+        ESP_LOGE(TAG, "Device registration response missing 'data' field");
+        cJSON_Delete(resp_root);
+        return "";
+    }
+    
+    std::string bot_id = data->valuestring;
+    ESP_LOGI(TAG, "Device registered successfully, botId=%s", bot_id.c_str());
+    
+    cJSON_Delete(resp_root);
+    return bot_id;
+}
+
+int JoyInsideAuth::HttpPostWithAuth(const std::string& url, 
+                                     const std::string& json_body,
+                                     const std::string& token,
+                                     std::string& response) {
+    // 重置响应缓冲区
+    http_response_len = 0;
+    http_response_buffer[0] = '\0';
+    
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.method = HTTP_METHOD_POST;
+    config.event_handler = http_event_handler;
+    config.timeout_ms = 10000;
+    config.buffer_size = 2048;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "Failed to init HTTP client");
+        return -1;
+    }
+    
+    // 设置认证头
+    std::string auth_header = "Bearer " + token;
+    esp_http_client_set_header(client, "Authorization", auth_header.c_str());
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, json_body.c_str(), json_body.length());
+    
+    ESP_LOGI(TAG, "Sending authenticated HTTP POST to %s", url.c_str());
     
     esp_err_t err = esp_http_client_perform(client);
     int status = -1;

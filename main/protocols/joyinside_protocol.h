@@ -117,12 +117,14 @@ private:
     bool use_binary_mode_;  // 是否使用二进制模式发送音频 (参考 C++ SDK)
     bool tts_started_;      // 标记 TTS 是否已开始（用于通知应用层）
     bool manual_mode_;      // 手动模式（需要发送 CLIENT_AUDIO_FINISH）
+    bool bot_id_ready_;     // Bot ID 是否已就绪（已配置或已注册）
     
     // 打断回调
     InterruptCallback on_interrupt_;
     
     // 初始化与配置
     bool InitializeConnection();
+    bool RegisterDeviceAndSaveBotId();  // 注册设备并保存 Bot ID
     void StartHeartbeat();
     void StopHeartbeat();
     static void HeartbeatCallback(void* arg);

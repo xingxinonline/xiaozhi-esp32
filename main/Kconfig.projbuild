@@ -818,16 +818,42 @@ menu "JoyInside Protocol (附身智能)"
                 Application ID.
     endmenu
 
+    choice JOYINSIDE_DEVICE_TYPE
+        prompt "Device Type (设备类型)"
+        default JOYINSIDE_DEVICE_TYPE_TEST
+        depends on USE_JOYINSIDE_PROTOCOL
+        help
+            选择设备类型。测试设备用于开发调试，生产设备用于正式环境。
+            
+            Select device type. Test device for development, production device for formal environment.
+
+        config JOYINSIDE_DEVICE_TYPE_TEST
+            bool "APP_ROBOT (测试设备)"
+            help
+                测试设备，用于开发和调试。
+                
+                Test device for development and debugging.
+
+        config JOYINSIDE_DEVICE_TYPE_PRODUCTION
+            bool "PHYSICAL_ROBOT (生产设备)"
+            help
+                生产设备，用于正式环境。
+                
+                Production device for formal environment.
+    endchoice
+
     config JOYINSIDE_BOT_ID
-        string "Bot ID (设备唯一标识)"
+        string "Bot ID (设备唯一标识，留空则自动注册)"
         default ""
         depends on USE_JOYINSIDE_PROTOCOL
         help
-            设备唯一标识，同一 Bot ID 只能建立一个 WebSocket 连接。
-            留空则使用设备 MAC 地址。
+            设备唯一标识。留空则设备首次启动时自动注册获取。
+            Bot ID 会存储在 NVS 中，重启后不会丢失。
+            同一 Bot ID 只能建立一个 WebSocket 连接。
             
-            Device unique identifier. Same Bot ID can only have one WebSocket connection.
-            Leave empty to use device MAC address.
+            Device unique identifier. Leave empty for auto-registration on first boot.
+            Bot ID is stored in NVS and persists across reboots.
+            Same Bot ID can only have one WebSocket connection.
 
     config JOYINSIDE_ACCESS_TOKEN
         string "Access Token (静态 Token)"
@@ -839,15 +865,6 @@ menu "JoyInside Protocol (附身智能)"
             
             Access token from JoyInside platform.
             Must be manually obtained.
-
-    config JOYINSIDE_USER_ID
-        string "User ID"
-        default "esp32_user"
-        depends on USE_JOYINSIDE_PROTOCOL
-        help
-            用户标识，用于区分不同用户的会话。
-            
-            User identifier for session management.
 
     config JOYINSIDE_HEARTBEAT_INTERVAL_MS
         int "Heartbeat Interval (ms)"
