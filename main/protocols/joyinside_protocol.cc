@@ -6,6 +6,7 @@
 
 #include <sdkconfig.h>
 #include <cstring>
+#include <algorithm>
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_random.h>
@@ -364,10 +365,12 @@ bool JoyInsideProtocol::RegisterDeviceAndSaveBotId() {
 #endif
     
     // 生成设备名称（与配网名称相同格式：LanDouBao-XXXX）
-    // 使用 MAC 地址最后 4 位作为设备标识
+    // 使用 MAC 地址最后 4 位作为设备标识（大写）
     std::string mac = SystemInfo::GetMacAddress();
     mac.erase(std::remove(mac.begin(), mac.end(), ':'), mac.end());
-    std::string device_name = "LanDouBao-" + mac.substr(mac.length() - 4);
+    std::string suffix = mac.substr(mac.length() - 4);
+    std::transform(suffix.begin(), suffix.end(), suffix.begin(), ::toupper);
+    std::string device_name = "LanDouBao-" + suffix;
     
     ESP_LOGI(TAG, "Registering device: deviceId=%s, type=%s, name=%s",
              device_id.c_str(), device_type.c_str(), device_name.c_str());
