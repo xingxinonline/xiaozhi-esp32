@@ -467,18 +467,24 @@ void Application::Start() {
 #endif
 
     protocol_->OnConnected([this]() {
-        // 重连成功时播放成功提示音
+        // 重连成功时播放成功提示音，恢复待机状态
         ESP_LOGI(TAG, "Network reconnected, playing success sound");
         DismissAlert();
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+        // 网络恢复，回到待机状态
+        if (device_state_ == kDeviceStateFatalError) {
+            SetDeviceState(kDeviceStateIdle);
+        }
     });
 
     protocol_->OnDisconnected([this]() {
-        // 网络断开时立即播放警告提示音，让用户感知到网络状态变化
+        // 网络断开时立即播放警告提示音，进入错误状态
         ESP_LOGW(TAG, "Network disconnected, playing warning sound");
         // 先清空现有音频队列，确保警告音能立即播放
         audio_service_.ResetDecoder();
         audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
+        // 网络断开，进入错误状态（红色快闪）
+        SetDeviceState(kDeviceStateFatalError);
     });
 
     protocol_->OnNetworkError([this](const std::string& message) {
@@ -502,7 +508,10 @@ void Application::Start() {
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
-            SetDeviceState(kDeviceStateIdle);
+            // 如果是网络错误状态，不要覆盖为 idle
+            if (device_state_ != kDeviceStateFatalError) {
+                SetDeviceState(kDeviceStateIdle);
+            }
         });
     });
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
@@ -807,9 +816,11 @@ void Application::SetDeviceState(DeviceState state) {
 
 void Application::OnNetworkReconnected() {
     // WiFi 重连成功后，尝试重新建立协议预连接
-    if (protocol_ && device_state_ == kDeviceStateIdle) {
+    if (protocol_ && (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateFatalError)) {
         ESP_LOGI(TAG, "Network reconnected, re-establishing protocol connection...");
         Schedule([this]() {
+            // 先恢复到 idle 状态
+            SetDeviceState(kDeviceStateIdle);
             // 调用 Start() 来建立预连接
             if (protocol_->Start()) {
                 ESP_LOGI(TAG, "Protocol pre-connection re-established");
