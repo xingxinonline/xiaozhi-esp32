@@ -54,7 +54,8 @@ JoyInsideProtocol::JoyInsideProtocol()
       use_binary_mode_(true),  // 默认使用二进制模式（参考 C++ SDK，效率更高）
       tts_started_(false),
       manual_mode_(false),
-      bot_id_ready_(false) {
+      bot_id_ready_(false),
+      sntp_synced_(false) {
     
     event_group_handle_ = xEventGroupCreate();
     
@@ -146,18 +147,50 @@ bool JoyInsideProtocol::Start() {
     // 预先建立 WebSocket 连接，这样唤醒后可以立即开始对话
     ESP_LOGI(TAG, "Pre-connecting to JoyInside server...");
     
-    if (!InitializeConnection()) {
-        ESP_LOGW(TAG, "Pre-connection failed, will retry on wake word");
-        return true;  // 返回 true，允许后续重试
+    // 持续等待 SNTP 时间同步和建立连接，直到成功
+    // JoyInside 需要正确的时间戳进行签名认证，没有同步成功无法连接
+    while (true) {
+        // 等待 SNTP 同步
+        if (!WaitForSntpSync(15)) {
+            ESP_LOGW(TAG, "SNTP sync failed, retrying in 5 seconds...");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
+        }
+        
+        // 尝试建立连接
+        constexpr int kMaxRetries = 3;
+        constexpr int kRetryDelayMs = 2000;
+        bool connected = false;
+        
+        for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
+            if (InitializeConnection()) {
+                connected = true;
+                break;
+            }
+            
+            if (attempt < kMaxRetries) {
+                ESP_LOGW(TAG, "Pre-connection attempt %d/%d failed, retrying in %d ms...", 
+                         attempt, kMaxRetries, kRetryDelayMs);
+                vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+            }
+        }
+        
+        if (connected) {
+            // 如果之前断开过并且现在预连接成功，通知应用层播放成功音
+            if (was_disconnected_ && on_connected_) {
+                on_connected_();
+                was_disconnected_ = false;
+            }
+            
+            ESP_LOGI(TAG, "Pre-connection successful");
+            return true;
+        }
+        
+        ESP_LOGW(TAG, "Pre-connection failed, retrying in 5 seconds...");
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
     
-    // 如果之前断开过并且现在预连接成功，通知应用层播放成功音
-    if (was_disconnected_ && on_connected_) {
-        on_connected_();
-        was_disconnected_ = false;  // 重置标志
-    }
-    
-    ESP_LOGI(TAG, "Pre-connection successful, ready for wake word");
+    // 不会到达这里
     return true;
 }
 
@@ -427,6 +460,13 @@ bool JoyInsideProtocol::OpenAudioChannel() {
     
     // 停止空闲超时定时器
     StopIdleTimeout();
+    
+    // 如果之前 SNTP 同步失败过，先尝试同步
+    if (!sntp_synced_ && !WaitForSntpSync(10)) {
+        reconnecting_ = false;
+        SetError("时间同步失败");
+        return false;
+    }
     
     // 检查是否有可用的预连接（WebSocket 已连接且心跳正常）
     bool has_valid_connection = websocket_ && websocket_->IsConnected() && heartbeat_timer_;
@@ -1172,4 +1212,32 @@ void JoyInsideProtocol::ResetForNewRound() {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     tts_buffer_.clear();
     prebuffering_ = true;
+}
+
+bool JoyInsideProtocol::WaitForSntpSync(int max_wait_sec) {
+    // 如果已经同步成功过，直接返回
+    if (sntp_synced_) {
+        return true;
+    }
+    
+    // 检查当前是否已同步
+    if (JoyInsideIsTimeSynced()) {
+        sntp_synced_ = true;
+        ESP_LOGI(TAG, "SNTP already synced");
+        return true;
+    }
+    
+    // 等待同步
+    ESP_LOGI(TAG, "Waiting for SNTP time sync (max %d seconds)...", max_wait_sec);
+    for (int i = 0; i < max_wait_sec; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (JoyInsideIsTimeSynced()) {
+            sntp_synced_ = true;
+            ESP_LOGI(TAG, "SNTP synced after %d seconds", i + 1);
+            return true;
+        }
+    }
+    
+    ESP_LOGW(TAG, "SNTP sync timeout after %d seconds", max_wait_sec);
+    return false;
 }

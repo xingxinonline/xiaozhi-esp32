@@ -118,6 +118,7 @@ private:
     bool tts_started_;      // 标记 TTS 是否已开始（用于通知应用层）
     bool manual_mode_;      // 手动模式（需要发送 CLIENT_AUDIO_FINISH）
     bool bot_id_ready_;     // Bot ID 是否已就绪（已配置或已注册）
+    bool sntp_synced_;      // SNTP 时间是否已同步（认证需要正确的时间戳）
     
     // 打断回调
     InterruptCallback on_interrupt_;
@@ -158,6 +159,7 @@ private:
     // 工具方法
     std::string GenerateUUID();
     std::string GenerateMessageId();
+    bool WaitForSntpSync(int max_wait_sec);  // 等待 SNTP 时间同步
 };
 
 #endif // _JOYINSIDE_PROTOCOL_H_
