@@ -25,6 +25,7 @@ public:
     bool Initialize(AudioCodec* codec, srmodel_list_t* models_list);
     void Feed(const std::vector<int16_t>& data);
     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
+    void OnPostWakeWordAudio(std::function<void(std::vector<int16_t>&& data)> callback);
     void Start();
     void Stop();
     size_t GetFeedSize();

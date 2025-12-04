@@ -134,6 +134,10 @@ void CustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wa
     wake_word_detected_callback_ = callback;
 }
 
+void CustomWakeWord::OnPostWakeWordAudio(std::function<void(std::vector<int16_t>&& data)> callback) {
+    // CustomWakeWord 不支持 drain 后续音频，忽略
+}
+
 void CustomWakeWord::Start() {
     running_ = true;
 }

@@ -94,6 +94,10 @@ void AfeWakeWord::OnWakeWordDetected(std::function<void(const std::string& wake_
     wake_word_detected_callback_ = callback;
 }
 
+void AfeWakeWord::OnPostWakeWordAudio(std::function<void(std::vector<int16_t>&& data)> callback) {
+    post_wake_word_audio_callback_ = callback;
+}
+
 void AfeWakeWord::Start() {
     xEventGroupSetBits(event_group_, DETECTION_RUNNING_EVENT);
 }
@@ -137,12 +141,62 @@ void AfeWakeWord::AudioDetectionTask() {
         StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
 
         if (res->wakeup_state == WAKENET_DETECTED) {
-            Stop();
+            // 唤醒词检测成功，先暂停检测事件（但不清空缓冲区）
+            // 注意：不要清除 DETECTION_RUNNING_EVENT，让 AudioInputTask 继续 feed
+            // 这样 drain 才能获取到后续的音频数据
             last_detected_wake_word_ = wake_words_[res->wakenet_model_index - 1];
 
+            // 先 drain 剩余音频（在 callback 之前，因为 callback 会触发 Stop 清空 buffer）
+            std::vector<std::vector<int16_t>> drained_audio;
+            if (post_wake_word_audio_callback_) {
+                constexpr int kMaxDrainMs = 1200;  // 最多 drain 1.2 秒
+                constexpr int kSilenceThresholdMs = 150;  // 静音 150ms 认为说完了
+                int total_drained_ms = 0;
+                int silence_ms = 0;
+                
+                ESP_LOGI(TAG, "Draining post-wake-word audio...");
+                
+                // 使用短超时 fetch，等待后续数据进来
+                while (total_drained_ms < kMaxDrainMs && silence_ms < kSilenceThresholdMs) {
+                    auto drain_res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(50));
+                    if (drain_res == nullptr || drain_res->ret_value == ESP_FAIL) {
+                        break;
+                    }
+                    
+                    // 计算这一帧的时长 (16kHz, 512 samples = 32ms)
+                    int frame_ms = (drain_res->data_size / sizeof(int16_t)) * 1000 / 16000;
+                    total_drained_ms += frame_ms;
+                    
+                    // 检查 VAD 状态
+                    if (drain_res->vad_state == VAD_SILENCE) {
+                        silence_ms += frame_ms;
+                    } else {
+                        silence_ms = 0;  // 有语音就重置静音计数
+                    }
+                    
+                    // 收集音频数据
+                    drained_audio.emplace_back(drain_res->data, 
+                        drain_res->data + drain_res->data_size / sizeof(int16_t));
+                }
+                
+                ESP_LOGI(TAG, "Drained %d ms audio (%zu chunks), silence: %d ms", 
+                    total_drained_ms, drained_audio.size(), silence_ms);
+            }
+            
+            // 现在清除检测事件，停止 feed
+            xEventGroupClearBits(event_group_, DETECTION_RUNNING_EVENT);
+            
+            // 通知唤醒词检测成功（这会触发 Application 调用 Stop）
             if (wake_word_detected_callback_) {
                 wake_word_detected_callback_(last_detected_wake_word_);
             }
+            
+            // callback 之后再发送 drained 的音频（此时 AudioProcessor 已经启动）
+            for (auto& audio : drained_audio) {
+                post_wake_word_audio_callback_(std::move(audio));
+            }
+            
+            // 注意：Stop() 已经被 callback 链调用了，会清空 buffer，这里不需要再做
         }
     }
 }

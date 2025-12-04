@@ -48,6 +48,10 @@ void EspWakeWord::OnWakeWordDetected(std::function<void(const std::string& wake_
     wake_word_detected_callback_ = callback;
 }
 
+void EspWakeWord::OnPostWakeWordAudio(std::function<void(std::vector<int16_t>&& data)> callback) {
+    // EspWakeWord 不支持 drain 后续音频，忽略
+}
+
 void EspWakeWord::Start() {
     running_ = true;
 }
