@@ -23,26 +23,28 @@ JoyInside 是京东推出的实时语音对话协议，支持低延迟、高质�
 
 ### 硬件平台
 
-| 组件     | 规格                   |
-| -------- | ---------------------- |
-| 主控     | ESP32-S3 (双核 240MHz) |
-| 音频输入 | ES7210 4通道 ADC       |
-| 音频输出 | ES8311 DAC + PA        |
-| 状态指示 | LED (GPIO48)           |
-| 用户按键 | BOOT 键 (GPIO0)        |
-| 存储     | 8MB Flash + 8MB PSRAM  |
+| 组件     | 规格                          |
+| -------- | ----------------------------- |
+| 主控     | ESP32-S3 (双核 240MHz)        |
+| 音频输入 | ES7210 4通道 ADC              |
+| 音频输出 | ES8311 DAC + PA               |
+| 状态指示 | 双色 LED (红 GPIO4, 蓝 GPIO5) |
+| 用户按键 | BOOT 键 (GPIO0)               |
+| 存储     | 8MB Flash + 8MB PSRAM         |
 
 ### 核心特性
 
 - ✅ **离线唤醒**：本地 WakeNet 模型，无需联网即可唤醒
+- ✅ **双唤醒词**：支持 "你好东东" 和 "你好京东" 唤醒
 - ✅ **实时对话**：云端 VAD + ASR，支持自然对话
 - ✅ **低延迟 TTS**：流式播放，边下载边播放
 - ✅ **打断功能**：说话即可打断 TTS 播放
 - ✅ **连续对话**：唤醒后可直接说内容，无需等待
 - ✅ **预连接**：启动时预先建立 WebSocket，唤醒后零延迟
 - ✅ **自动重连**：网络断开后自动重连，支持状态提示音
+- ✅ **蓝牙配网**：通过小程序 Bluepebo 完成 WiFi 配置
 - ✅ **LED 状态指示**：通过 LED 指示当前工作状态
-- ✅ **单按钮控制**：短按音量、双击减音量、长按对话
+- ✅ **单按钮控制**：短按音量、双击减音量、长按配网
 
 ---
 
@@ -52,11 +54,11 @@ JoyInside 是京东推出的实时语音对话协议，支持低延迟、高质�
 
 使用 ESP-SR 的 WakeNet9 模型进行本地唤醒词检测。
 
-| 参数     | 值         |
-| -------- | ---------- |
-| 唤醒词   | "你好东东" |
-| 检测延迟 | < 100ms    |
-| 误唤醒率 | < 0.5次/天 |
+| 参数     | 值                      |
+| -------- | ----------------------- |
+| 唤醒词   | "你好东东" / "你好京东" |
+| 检测延迟 | < 100ms                 |
+| 误唤醒率 | < 0.5次/天              |
 
 ### 2. 语音识别 (ASR)
 
@@ -251,6 +253,45 @@ IDLE → LISTENING → PROCESSING → SPEAKING → IDLE
     │
 ```
 
+### 蓝牙配网时序
+
+```
+时间轴
+    │
+    │  用户长按黑色按键
+    │
+  0 ├─── 检测到长按
+    │    ├── 播放「进入配网模式」提示音 🔊
+    │    ├── 启动 BLE 广播 (LanDouBao-XXXX)
+    │    └── LED 开始慢闪
+    │
+    │    用户打开小程序 Bluepebo
+    │
+ 5s ├─── 小程序发现设备
+    │    用户点击 LanDouBao-XXXX
+    │
+10s ├─── BLE 连接建立
+    │    用户选择 WiFi 并输入密码
+    │
+15s ├─── 收到 WiFi 配置
+    │    ├── 保存 WiFi 信息到 NVS
+    │    ├── 播放「配网成功」提示音 ✅
+    │    └── 设备重启
+    │
+20s ├─── 设备重启完成
+    │    自动连接 WiFi
+    │
+25s ├─── WiFi 连接成功
+    │    触发协议预连接
+    │
+26s ├─── WebSocket 连接成功
+    │    ├── 播放成功提示音 ✅
+    │    └── 设备就绪，等待唤醒
+    │
+```
+
+> 💡 **说明**：整个配网流程约 30 秒完成。配网信息保存后，下次上电自动连接。
+
 ### 网络断开重连时序
 
 ```
@@ -260,9 +301,9 @@ IDLE → LISTENING → PROCESSING → SPEAKING → IDLE
     │
   0 ├─── 检测到连接断开
     │    ├── 播放警告提示音 ⚠️
+    │    ├── LED 变为红色快闪 🔴
     │    ├── 停止当前 TTS 播放
-    │    ├── 重置对话状态
-    │    └── 设备进入 IDLE 状态
+    │    └── 设备进入错误状态
     │
     │    ... WiFi 重连中 (自动) ...
     │
@@ -271,6 +312,7 @@ IDLE → LISTENING → PROCESSING → SPEAKING → IDLE
     │
 16s ├─── WebSocket 连接成功
     │    ├── 播放成功提示音 ✅
+    │    ├── LED 恢复蓝色呼吸 🔵
     │    └── 恢复就绪状态
     │
     │    设备可正常使用
@@ -293,11 +335,17 @@ IDLE → LISTENING → PROCESSING → SPEAKING → IDLE
    - TTS 播放时直接说话即可打断
    - 打断后立即进入聆听状态
 
-3. **单按钮控制（BOOT 键）**
+3. **单按钮控制（黑色按键）**
    - 短按：音量 +10%（到顶循环回 10%）
    - 双击：音量 -10%（最低 0%）
-   - 长按：开始/停止对话
-   - 启动时短按：进入配网模式（未连接 WiFi 时）
+   - 长按：进入配网模式
+
+4. **蓝牙配网流程**
+   - 长按黑色按键进入配网模式，设备播放提示音
+   - 微信小程序搜索 "Bluepebo" 并登录
+   - 点击右下角 "+" 号，选择 "LanDouBao-XXXX" 设备
+   - 选择 WiFi 网络并输入密码，点击发送
+   - 配网成功后设备自动重启，连接成功播放提示音
 
 4. **空闲超时**
    - 对话结束后 120 秒自动断开音频通道
@@ -330,14 +378,18 @@ CONFIG_SEND_WAKE_WORD_DATA=n
 # 可选：500ms、750ms、1000ms、1500ms、2000ms
 CONFIG_WAKE_WORD_BUFFER_1000MS=y
 
-# Bot ID
-CONFIG_JOYINSIDE_BOT_ID="your_bot_id"
+# Bot ID（留空则设备首次启动时自动注册获取）
+CONFIG_JOYINSIDE_BOT_ID=""
+
+# 设备类型（APP_ROBOT=测试设备, PHYSICAL_ROBOT=生产设备）
+CONFIG_JOYINSIDE_DEVICE_TYPE_TEST=y
 
 # 认证方式 (AK/SK)
 CONFIG_JOYINSIDE_AUTH_AK_SK=y
 CONFIG_JOYINSIDE_ACCESS_KEY="your_access_key"
 CONFIG_JOYINSIDE_ACCESS_KEY_SECRET="your_secret_key"
 CONFIG_JOYINSIDE_VENDOR_ID=100090
+CONFIG_JOYINSIDE_APP_ID="your_app_id"
 
 # 心跳间隔 (毫秒)
 CONFIG_JOYINSIDE_HEARTBEAT_INTERVAL_MS=15000
@@ -348,6 +400,34 @@ CONFIG_JOYINSIDE_IDLE_TIMEOUT_SEC=120
 # TTS 预缓冲帧数
 CONFIG_JOYINSIDE_PREBUFFER_FRAMES=3
 ```
+
+### 设备自动注册
+
+设备首次启动联网时会自动注册获取 Bot ID：
+
+```
+设备启动联网
+    ↓
+检查 Kconfig 是否配置 Bot ID
+    ├── 有：使用配置的 Bot ID
+    └── 无：检查 NVS 是否存储 Bot ID
+              ├── 有：使用存储的 Bot ID
+              └── 无：调用设备注册 API
+                        ↓
+                  获取 Bot ID
+                        ↓
+                  存储到 NVS
+                        ↓
+                  后续连接使用此 Bot ID
+```
+
+| 参数         | 来源           | 说明                                   |
+| ------------ | -------------- | -------------------------------------- |
+| **deviceId** | 设备 UUID      | 持久化存储在 NVS 中的 UUID v4          |
+| **name**     | LanDouBao-XXXX | 与配网名称相同（MAC后4位）             |
+| **type**     | 配置选项       | APP_ROBOT(测试) / PHYSICAL_ROBOT(生产) |
+
+> 💡 **注意**：Bot ID 一旦注册成功会存储在 NVS 中，设备重启后不会重新注册。如需重新注册，可清除 NVS 或在 Kconfig 中指定新的 Bot ID。
 
 ### 唤醒词发送配置
 
@@ -481,6 +561,8 @@ esp_log_level_set("JoyInsideAuth", ESP_LOG_DEBUG);
 
 | 版本  | 日期       | 更新内容                                  |
 | ----- | ---------- | ----------------------------------------- |
+| 1.3.0 | 2025-12-04 | 添加设备自动注册功能，Bot ID 自动获取并存储  |
+| 1.2.0 | 2025-12-04 | 添加蓝牙配网流程说明，支持双唤醒词        |
 | 1.1.0 | 2025-12-03 | 添加网络断开/重连提示音，优化自动重连机制 |
 | 1.0.0 | 2025-12-02 | 初始版本，完整功能实现                    |
 
@@ -494,4 +576,4 @@ esp_log_level_set("JoyInsideAuth", ESP_LOG_DEBUG);
 
 ---
 
-*本文档最后更新于 2025年12月3日*
+*本文档最后更新于 2025年12月4日*
