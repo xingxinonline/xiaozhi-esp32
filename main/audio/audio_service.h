@@ -139,6 +139,9 @@ private:
     std::deque<std::unique_ptr<AudioTask>> audio_playback_queue_;
     // For server AEC
     std::deque<uint32_t> timestamp_queue_;
+    
+    // 用于累积后续音频数据到足够的帧大小
+    std::vector<int16_t> post_wake_word_buffer_;
 
     bool wake_word_initialized_ = false;
     bool audio_processor_initialized_ = false;

@@ -404,7 +404,13 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
         timestamp_queue_.pop_front();
     }
 
-    audio_queue_cv_.wait(lock, [this]() { return audio_encode_queue_.size() < MAX_ENCODE_TASKS_IN_QUEUE; });
+    // 使用带超时的等待，避免无限阻塞导致 AFE ringbuffer 溢出
+    // 如果 100ms 内队列仍然满，丢弃这帧数据
+    if (!audio_queue_cv_.wait_for(lock, std::chrono::milliseconds(100), 
+        [this]() { return audio_encode_queue_.size() < MAX_ENCODE_TASKS_IN_QUEUE; })) {
+        ESP_LOGW(TAG, "Encode queue full, dropping audio frame");
+        return;
+    }
     audio_encode_queue_.push_back(std::move(task));
     audio_queue_cv_.notify_all();
 }
@@ -670,8 +676,28 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
     if (wake_word_) {
         wake_word_->OnWakeWordDetected([this](const std::string& wake_word) {
+            // 清空累积 buffer，准备接收新的后续音频
+            post_wake_word_buffer_.clear();
+            
             if (callbacks_.on_wake_word_detected) {
                 callbacks_.on_wake_word_detected(wake_word);
+            }
+        });
+        
+        // 设置后续音频回调：把唤醒词后的音频累积后推入编码队列
+        wake_word_->OnPostWakeWordAudio([this](std::vector<int16_t>&& data) {
+            // 累积数据到足够的帧大小 (960 samples = 60ms @ 16kHz)
+            constexpr size_t kFrameSamples = OPUS_FRAME_DURATION_MS * 16000 / 1000;
+            
+            post_wake_word_buffer_.insert(post_wake_word_buffer_.end(), data.begin(), data.end());
+            
+            // 当累积够一帧时，推入编码队列
+            while (post_wake_word_buffer_.size() >= kFrameSamples) {
+                std::vector<int16_t> frame(post_wake_word_buffer_.begin(), 
+                                           post_wake_word_buffer_.begin() + kFrameSamples);
+                post_wake_word_buffer_.erase(post_wake_word_buffer_.begin(), 
+                                             post_wake_word_buffer_.begin() + kFrameSamples);
+                PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(frame));
             }
         });
     }
