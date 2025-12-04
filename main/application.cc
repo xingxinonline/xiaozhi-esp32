@@ -20,6 +20,7 @@
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
+#include <wifi_station.h>
 
 #define TAG "Application"
 
@@ -819,11 +820,32 @@ void Application::OnNetworkReconnected() {
     if (protocol_ && (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateFatalError)) {
         ESP_LOGI(TAG, "Network reconnected, re-establishing protocol connection...");
         Schedule([this]() {
-            // 先恢复到 idle 状态
-            SetDeviceState(kDeviceStateIdle);
-            // 调用 Start() 来建立预连接
-            if (protocol_->Start()) {
-                ESP_LOGI(TAG, "Protocol pre-connection re-established");
+            constexpr int kRetryDelayMs = 5000;
+            
+            // 保持红灯快闪状态，直到预连接成功
+            SetDeviceState(kDeviceStateFatalError);
+            
+            int attempt = 0;
+            while (true) {
+                ++attempt;
+                ESP_LOGI(TAG, "Protocol pre-connection attempt %d...", attempt);
+                
+                if (protocol_->Start()) {
+                    // 预连接成功，恢复到 idle 状态（蓝色呼吸）
+                    SetDeviceState(kDeviceStateIdle);
+                    ESP_LOGI(TAG, "Protocol pre-connection re-established after %d attempts", attempt);
+                    return;
+                }
+                
+                ESP_LOGW(TAG, "Pre-connection failed, retrying in %d ms...", kRetryDelayMs);
+                vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+                
+                // 检查网络是否还在线，如果断开了就退出循环
+                auto& wifi = WifiStation::GetInstance();
+                if (!wifi.IsConnected()) {
+                    ESP_LOGW(TAG, "Network disconnected during retry, stopping");
+                    return;
+                }
             }
         });
     }
