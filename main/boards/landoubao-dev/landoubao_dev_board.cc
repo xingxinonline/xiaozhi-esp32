@@ -3,7 +3,7 @@
 #include "application.h"
 #include "button.h"
 #include "config.h"
-#include "led/single_led.h"
+#include "led/dual_color_led.h"
 #include "assets/lang_config.h"
 
 #include <esp_log.h>
@@ -74,7 +74,7 @@ public:
     }
 
     virtual Led* GetLed() override {
-        static SingleLed led(BUILTIN_LED_GPIO);
+        static DualColorLed led(LED_RED_GPIO, LED_BLUE_GPIO);
         return &led;
     }
 
