@@ -913,8 +913,8 @@ void JoyInsideProtocol::HandleEvent(const cJSON* content) {
         SetDialogState(JoyInsideDialogState::kIdle);
         ResetForNewRound();
         
-    } else if (strcmp(type, "CALL_AGENT_INTERRUPTED") == 0) {
-        // ⚠️ 核心打断事件！
+    } else if (strcmp(type, "INTERRUPT") == 0 || strcmp(type, "CALL_AGENT_INTERRUPTED") == 0) {
+        // ⚠️ 打断事件 - INTERRUPT 和 CALL_AGENT_INTERRUPTED 都表示打断
         ESP_LOGW(TAG, "INTERRUPTED! Stopping playback...");
         
         // 记录被打断的轮次 ID
@@ -927,15 +927,16 @@ void JoyInsideProtocol::HandleEvent(const cJSON* content) {
         xEventGroupSetBits(event_group_handle_, JOYINSIDE_EVENT_INTERRUPTED);
         
     } else if (strcmp(type, "EMPTY_CONTENT") == 0) {
-        // 未识别到有效内容，切回空闲状态但不重启 idle timeout
-        // （噪音触发的 EMPTY_CONTENT 不应该重置倒计时）
-        ESP_LOGI(TAG, "No valid speech detected, returning to idle (no timeout reset)");
-        // 直接设置状态，不通过 SetDialogState 避免重启 idle timeout
+        // 未识别到有效内容
+        // JoyInside 协议层回到 IDLE，但 Application 层保持 listening 状态继续监听
+        ESP_LOGI(TAG, "No valid speech detected, protocol idle but app keeps listening");
+        // 直接设置协议状态，不通过 SetDialogState 避免重启 idle timeout
         JoyInsideDialogState old_state = dialog_state_.exchange(JoyInsideDialogState::kIdle);
         if (old_state != JoyInsideDialogState::kIdle) {
             const char* state_names[] = {"IDLE", "LISTENING", "PROCESSING", "SPEAKING", "INTERRUPTED"};
             ESP_LOGI(TAG, "Dialog state: %s -> IDLE (no timeout reset)", state_names[(int)old_state]);
         }
+        // 注意：不通知 Application 层，让它保持 listening 状态继续监听用户说话
         
     } else if (strcmp(type, "USER_AUDIT_FAIL") == 0) {
         // 输入内容审核失败
