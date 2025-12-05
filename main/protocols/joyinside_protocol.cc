@@ -3,6 +3,7 @@
 #include "system_info.h"
 #include "application.h"
 #include "settings.h"
+#include "assets/lang_config.h"
 
 #include <sdkconfig.h>
 #include <cstring>
@@ -613,6 +614,9 @@ void JoyInsideProtocol::OnIdleTimeout() {
     // 标记音频通道为非活跃，但保持 WebSocket 连接
     audio_channel_active_ = false;
     idle_timeout_timer_ = nullptr;  // 定时器已经触发，清空指针
+    
+    // 播放成功提示音，表示进入可唤醒状态
+    Application::GetInstance().PlaySound(Lang::Sounds::OGG_SUCCESS);
     
     // 通知应用层音频通道已关闭
     if (on_audio_channel_closed_) {
