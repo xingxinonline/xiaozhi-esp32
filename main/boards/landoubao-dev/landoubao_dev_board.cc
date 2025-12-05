@@ -40,7 +40,7 @@ private:
             auto codec = GetAudioCodec();
             if (codec) {
                 int volume = codec->output_volume() + 10;
-                if (volume > 100) {
+                if (volume > AUDIO_MAX_VOLUME) {
                     volume = 10;  // 循环回最小
                 }
                 codec->SetOutputVolume(volume);

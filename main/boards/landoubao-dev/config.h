@@ -28,4 +28,7 @@
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_NC
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_NC
 
+// 音量限制（声音太大效果不好）
+#define AUDIO_MAX_VOLUME        70
+
 #endif // _BOARD_CONFIG_H_
