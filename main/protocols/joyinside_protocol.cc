@@ -958,16 +958,21 @@ void JoyInsideProtocol::HandleEvent(const cJSON* content) {
         
     } else if (strcmp(type, "INTERRUPT") == 0 || strcmp(type, "CALL_AGENT_INTERRUPTED") == 0) {
         // ⚠️ 打断事件 - INTERRUPT 和 CALL_AGENT_INTERRUPTED 都表示打断
-        ESP_LOGW(TAG, "INTERRUPTED! Stopping playback...");
-        
-        // 记录被打断的轮次 ID
-        if (cJSON_IsString(roundId)) {
-            interrupted_round_id_ = roundId->valuestring;
+        // 只有在非 IDLE 状态下才处理打断（避免重复打断）
+        if (dialog_state_ == JoyInsideDialogState::kIdle) {
+            ESP_LOGD(TAG, "Ignoring INTERRUPT in IDLE state");
+        } else {
+            ESP_LOGW(TAG, "INTERRUPTED! Stopping playback...");
+            
+            // 记录被打断的轮次 ID
+            if (cJSON_IsString(roundId)) {
+                interrupted_round_id_ = roundId->valuestring;
+            }
+            
+            // 执行打断处理
+            HandleInterrupt();
+            xEventGroupSetBits(event_group_handle_, JOYINSIDE_EVENT_INTERRUPTED);
         }
-        
-        // 执行打断处理
-        HandleInterrupt();
-        xEventGroupSetBits(event_group_handle_, JOYINSIDE_EVENT_INTERRUPTED);
         
     } else if (strcmp(type, "EMPTY_CONTENT") == 0) {
         // 未识别到有效内容
@@ -1008,8 +1013,13 @@ void JoyInsideProtocol::HandleASR(const cJSON* content) {
         const char* asr_text = text->valuestring;
         ESP_LOGI(TAG, "ASR %s: %s", isFinal ? "(Final)" : "(Partial)", asr_text);
         
-        // 只有非空的 ASR 结果才切换到 LISTENING 状态
-        if (strlen(asr_text) > 0 && dialog_state_ != JoyInsideDialogState::kListening) {
+        // 只有非空的 ASR 结果且当前不在 LISTENING/SPEAKING/INTERRUPTED 状态才切换
+        // SPEAKING 状态下收到 ASR 表示用户正在打断，等待 CALL_AGENT_INTERRUPTED 统一处理
+        // 避免 SPEAKING -> LISTENING -> INTERRUPTED 的冗余状态切换
+        if (strlen(asr_text) > 0 && 
+            dialog_state_ != JoyInsideDialogState::kListening &&
+            dialog_state_ != JoyInsideDialogState::kSpeaking &&
+            dialog_state_ != JoyInsideDialogState::kInterrupted) {
             SetDialogState(JoyInsideDialogState::kListening);
         }
     }
