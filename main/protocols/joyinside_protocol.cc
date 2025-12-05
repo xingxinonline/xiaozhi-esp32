@@ -938,22 +938,33 @@ void JoyInsideProtocol::HandleEvent(const cJSON* content) {
         
     } else if (strcmp(type, "TTS_COMPLETE") == 0) {
         // TTS 播放完成
-        xEventGroupSetBits(event_group_handle_, JOYINSIDE_EVENT_TTS_COMPLETE);
-        ESP_LOGI(TAG, "TTS playback complete");
-        
-        // 通知应用层 TTS 结束
-        if (on_incoming_json_) {
-            cJSON* stop_msg = cJSON_CreateObject();
-            cJSON_AddStringToObject(stop_msg, "type", "tts");
-            cJSON_AddStringToObject(stop_msg, "state", "stop");
-            on_incoming_json_(stop_msg);
-            cJSON_Delete(stop_msg);
-            ESP_LOGI(TAG, "Notified app layer: TTS stop");
+        // 只在 SPEAKING 状态下处理，避免打断后重复处理
+        if (dialog_state_ == JoyInsideDialogState::kSpeaking) {
+            xEventGroupSetBits(event_group_handle_, JOYINSIDE_EVENT_TTS_COMPLETE);
+            ESP_LOGI(TAG, "TTS playback complete");
+            
+            // 通知应用层 TTS 结束
+            if (on_incoming_json_) {
+                cJSON* stop_msg = cJSON_CreateObject();
+                cJSON_AddStringToObject(stop_msg, "type", "tts");
+                cJSON_AddStringToObject(stop_msg, "state", "stop");
+                on_incoming_json_(stop_msg);
+                cJSON_Delete(stop_msg);
+                ESP_LOGI(TAG, "Notified app layer: TTS stop");
+            }
+            
+            // 正常完成，进入 IDLE
+            SetDialogState(JoyInsideDialogState::kIdle);
+        } else {
+            ESP_LOGD(TAG, "Ignoring TTS_COMPLETE in %s state", 
+                     dialog_state_ == JoyInsideDialogState::kIdle ? "IDLE" : "non-SPEAKING");
         }
         
     } else if (strcmp(type, "COMPLETE") == 0) {
-        // 对话轮次完成
-        SetDialogState(JoyInsideDialogState::kIdle);
+        // 对话轮次完成 - 只在非 IDLE 状态下处理
+        if (dialog_state_ != JoyInsideDialogState::kIdle) {
+            SetDialogState(JoyInsideDialogState::kIdle);
+        }
         ResetForNewRound();
         
     } else if (strcmp(type, "INTERRUPT") == 0 || strcmp(type, "CALL_AGENT_INTERRUPTED") == 0) {
