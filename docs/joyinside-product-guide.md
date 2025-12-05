@@ -7,8 +7,7 @@
 - [产品概述](#产品概述)
 - [核心功能](#核心功能)
 - [系统架构](#系统架构)
-- [交互时序](#交互时序)
-- [协议状态机](#协议状态机)
+- [协议时序](#协议时序)
 - [使用技巧](#使用技巧)
 - [配置说明](#配置说明)
 - [注意事项](#注意事项)
@@ -161,217 +160,52 @@ IDLE → LISTENING → PROCESSING → SPEAKING → IDLE
 
 ---
 
-## 交互时序
+## 协议时序
 
-### 完整对话时序
-
-```
-时间轴 (ms)
-    │
-    │  用户说 "你好东东，今天天气怎么样"
-    │
-  0 ├─── WakeNet 检测到唤醒词
-    │
-    │    [并行执行]
-    │    ├── 启动唤醒词 Opus 编码 (异步)
-    │    ├── 验证预连接 (SendPing)
-    │    └── 如需要，建立新连接
-    │
-200 ├─── 编码完成，开始发送唤醒词音频
-    │
-300 ├─── 切换到 LISTENING 状态
-    │    继续上传实时音频
-    │
-    │    ... 用户继续说话 ...
-    │
-800 ├─── 服务端: ASR 识别中
-    │
-    │    ... 用户说完 ...
-    │
-1500├─── 服务端: VAD 检测到静音
-    │
-1800├─── 收到 ASR Final: "你好东东今天天气怎么样"
-    │
-2000├─── 收到 CALL_AGENT_START_EVENT
-    │    切换到 PROCESSING 状态
-    │
-    │    ... Agent 处理中 ...
-    │
-2500├─── 收到 TTS_SENTENCE_START
-    │    切换到 SPEAKING 状态
-    │    开始预缓冲 TTS 音频
-    │
-2620├─── 预缓冲完成 (2帧/120ms)
-    │    开始播放 TTS
-    │
-    │    ... TTS 播放中 ...
-    │
-5000├─── 收到 TTS_COMPLETE
-    │
-5200├─── TTS 播放完毕
-    │    切换到 IDLE 状态
-    │    启动空闲超时计时器 (120秒)
-    │
-```
-
-### 打断时序
-
-```
-时间轴 (ms)
-    │
-    │  TTS 正在播放...
-    │
-  0 ├─── 用户开始说话
-    │
- 50 ├─── 云端 VAD 检测到语音
-    │
-100 ├─── 收到 INTERRUPT 事件
-    │    ├── 停止 TTS 播放
-    │    ├── 清空解码缓冲
-    │    └── 切换到 LISTENING 状态
-    │
-    │    继续新一轮对话...
-    │
-```
-
-### 连续唤醒时序
-
-```
-时间轴 (ms)
-    │
-    │  用户说 "你好东东今天几号"（连续说，不停顿）
-    │
-  0 ├─── WakeNet 检测到 "你好东东"
-    │
-200 ├─── 开始发送音频（包含唤醒词+后续内容）
-    │
-500 ├─── 服务端收到 INTERRUPT（检测到持续语音）
-    │
-    │    ... 用户继续说 ...
-    │
-1200├─── ASR Final: "你好东东今天几号"
-    │    （唤醒词和内容一起识别）
-    │
-```
-
-### 蓝牙配网时序
-
-```
-时间轴
-    │
-    │  用户长按黑色按键
-    │
-  0 ├─── 检测到长按
-    │    ├── 播放「进入配网模式」提示音 🔊
-    │    ├── 启动 BLE 广播 (LanDouBao-XXXX)
-    │    └── LED 开始慢闪
-    │
-    │    用户打开小程序 Bluepebo
-    │
- 5s ├─── 小程序发现设备
-    │    用户点击 LanDouBao-XXXX
-    │
-10s ├─── BLE 连接建立
-    │    用户选择 WiFi 并输入密码
-    │
-15s ├─── 收到 WiFi 配置
-    │    ├── 保存 WiFi 信息到 NVS
-    │    ├── 播放「配网成功」提示音 ✅
-    │    └── 设备重启
-    │
-20s ├─── 设备重启完成
-    │    自动连接 WiFi
-    │
-25s ├─── WiFi 连接成功
-    │    触发协议预连接
-    │
-26s ├─── WebSocket 连接成功
-    │    ├── 播放成功提示音 ✅
-    │    └── 设备就绪，等待唤醒
-    │
-```
-
-> 💡 **说明**：整个配网流程约 30 秒完成。配网信息保存后，下次上电自动连接。
-
-### 网络断开重连时序
-
-```
-时间轴 (ms)
-    │
-    │  WiFi/WebSocket 连接断开
-    │
-  0 ├─── 检测到连接断开
-    │    ├── 播放警告提示音 ⚠️
-    │    ├── LED 变为红色快闪 🔴
-    │    ├── 停止当前 TTS 播放
-    │    └── 设备进入错误状态
-    │
-    │    ... WiFi 重连中 (自动) ...
-    │
-15s ├─── WiFi 重连成功
-    │    触发协议预连接
-    │
-16s ├─── WebSocket 连接成功
-    │    ├── 播放成功提示音 ✅
-    │    ├── LED 恢复蓝色呼吸 🔵
-    │    └── 恢复就绪状态
-    │
-    │    设备可正常使用
-    │
-```
-
-> 💡 **说明**：网络断开时会立即播放警告音通知用户，重连成功后播放成功音。整个过程自动完成，用户无需干预。
-
----
-
-## 协议状态机
-
-### 状态定义
+### 状态机定义
 
 JoyInside 协议定义了 5 种对话状态：
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         状态机概览                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌──────────┐                                                  │
-│   │   IDLE   │◄─────────────────────────────────────────────┐  │
-│   │  (待机)   │                                               │  │
-│   └────┬─────┘                                               │  │
-│        │ 唤醒词/ASR                                          │  │
-│        ▼                                                     │  │
-│   ┌──────────┐     CALL_AGENT_START_EVENT    ┌──────────┐   │  │
-│   │LISTENING │─────────────────────────────►│PROCESSING│   │  │
-│   │  (聆听)   │                               │  (处理)   │   │  │
-│   └────┬─────┘◄─────────────────────────────┘            │  │
-│        │                 EMPTY_CONTENT                    │  │
-│        │ ASR (打断)                                       │  │
-│        ▼                                                  │  │
-│   ┌──────────┐     TTS_SENTENCE_START        ┌──────────┐│  │
-│   │INTERRUPTED│◄────────────────────────────│ SPEAKING ││  │
-│   │  (打断)   │                              │  (播放)   │├──┘  │
-│   └──────────┘                              └────┬─────┘│     │
-│        │                                         │      │     │
-│        │                                         │ TTS_COMPLETE
-│        │     CALL_AGENT_INTERRUPTED              │      │     │
-│        └─────────────────────────────────────────┼──────┘     │
-│                                                  │            │
-│                                                  ▼            │
-│                                            返回 IDLE ─────────┘
-│                                                                │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE: 启动
+
+    IDLE --> LISTENING: 唤醒词/ASR
+    note right of IDLE: 🔵呼吸灯\n待机状态
+
+    LISTENING --> PROCESSING: CALL_AGENT_START_EVENT
+    LISTENING --> LISTENING: EMPTY_CONTENT
+    LISTENING --> INTERRUPTED: INTERRUPT
+    note right of LISTENING: 🔵常亮\n用户说话中
+
+    PROCESSING --> SPEAKING: TTS_SENTENCE_START
+    PROCESSING --> LISTENING: EMPTY_CONTENT
+    PROCESSING --> INTERRUPTED: INTERRUPT
+    note right of PROCESSING: 🔵常亮\nAI思考中
+
+    SPEAKING --> IDLE: TTS_COMPLETE
+    SPEAKING --> INTERRUPTED: INTERRUPT/ASR打断
+    note right of SPEAKING: 🔴常亮\nAI回答中
+
+    INTERRUPTED --> IDLE: CALL_AGENT_INTERRUPTED
+    note right of INTERRUPTED: 打断处理中
 ```
 
-### 状态转换矩阵
+### 状态转换表
 
-| 当前状态 \ 事件 | ASR         | CALL_AGENT_START_EVENT | TTS_SENTENCE_START | TTS_COMPLETE | INTERRUPT     | CALL_AGENT_INTERRUPTED | EMPTY_CONTENT |
-| --------------- | ----------- | ---------------------- | ------------------ | ------------ | ------------- | ---------------------- | ------------- |
-| **IDLE**        | → LISTENING | -                      | -                  | -            | (忽略)        | -                      | -             |
-| **LISTENING**   | -           | → PROCESSING           | -                  | -            | → INTERRUPTED | -                      | → LISTENING   |
-| **PROCESSING**  | -           | -                      | → SPEAKING         | -            | → INTERRUPTED | -                      | → LISTENING   |
-| **SPEAKING**    | (等待打断)  | -                      | -                  | → IDLE       | → INTERRUPTED | -                      | -             |
-| **INTERRUPTED** | -           | -                      | -                  | -            | -             | → IDLE                 | -             |
+| 当前状态        | 触发事件               | 目标状态    | 说明                            |
+| --------------- | ---------------------- | ----------- | ------------------------------- |
+| **IDLE**        | 唤醒词/ASR             | LISTENING   | 开始聆听                        |
+| **IDLE**        | INTERRUPT              | (忽略)      | 避免无意义转换                  |
+| **LISTENING**   | CALL_AGENT_START_EVENT | PROCESSING  | Agent开始处理                   |
+| **LISTENING**   | EMPTY_CONTENT          | LISTENING   | 空内容，继续等待                |
+| **LISTENING**   | INTERRUPT              | INTERRUPTED | 用户打断                        |
+| **PROCESSING**  | TTS_SENTENCE_START     | SPEAKING    | 开始播放TTS                     |
+| **PROCESSING**  | EMPTY_CONTENT          | LISTENING   | 空回复，回到聆听                |
+| **PROCESSING**  | INTERRUPT              | INTERRUPTED | 用户打断                        |
+| **SPEAKING**    | TTS_COMPLETE           | IDLE        | 播放完成，回到待机              |
+| **SPEAKING**    | INTERRUPT/ASR          | INTERRUPTED | 用户打断（ASR时等待服务端确认） |
+| **INTERRUPTED** | CALL_AGENT_INTERRUPTED | IDLE        | 打断确认，回到待机              |
 
 > 💡 **优化说明**：
 > - `IDLE` 状态收到 `INTERRUPT` 事件时直接忽略，避免无意义的状态转换
@@ -473,6 +307,62 @@ sequenceDiagram
     Protocol->>Protocol: SetDialogState(LISTENING)
     Note over Protocol: 状态: LISTENING
     Note over Protocol: 等待用户继续说话
+```
+
+### 蓝牙配网流程
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Device as 设备
+    participant App as 小程序
+
+    User->>Device: 长按黑色按键
+    Device->>Device: 播放提示音 🔊
+    Device->>Device: 启动 BLE 广播
+    Note over Device: LED 慢闪 🔵
+
+    User->>App: 打开 Bluepebo
+    App->>Device: 发现 LanDouBao-XXXX
+    User->>App: 点击设备连接
+
+    App->>Device: BLE 连接
+    User->>App: 选择 WiFi 并输入密码
+    App->>Device: 发送 WiFi 配置
+
+    Device->>Device: 保存到 NVS
+    Device->>Device: 播放成功音 ✅
+    Device->>Device: 重启
+
+    Device->>Device: 连接 WiFi
+    Device->>Device: WebSocket 预连接
+    Device->>Device: 播放就绪音 ✅
+    Note over Device: LED 呼吸 🔵
+```
+
+### 网络断开重连流程
+
+```mermaid
+sequenceDiagram
+    participant Device as 设备
+    participant WiFi as WiFi
+    participant Server as 云端
+
+    Note over Device: 正常运行中...
+
+    WiFi--xDevice: 连接断开
+    Device->>Device: 播放警告音 ⚠️
+    Note over Device: LED 红色快闪 🔴
+
+    loop 自动重试
+        Device->>WiFi: 尝试重连
+    end
+
+    WiFi->>Device: 重连成功
+    Device->>Server: WebSocket 预连接
+    Server->>Device: 连接成功
+    Device->>Device: 播放成功音 ✅
+    Note over Device: LED 恢复呼吸 🔵
 ```
 
 ### 事件详解
