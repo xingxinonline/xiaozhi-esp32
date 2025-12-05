@@ -477,33 +477,94 @@ CONFIG_JOYINSIDE_IDLE_TIMEOUT_SEC=120
 CONFIG_JOYINSIDE_PREBUFFER_FRAMES=3
 ```
 
-### 设备自动注册
+### 设备注册与登录流程
 
-设备首次启动联网时会自动注册获取 Bot ID：
+设备启动后需要完成 SNTP 时钟同步、Token 获取、设备注册（首次）和 WebSocket 连接：
 
+```mermaid
+sequenceDiagram
+    participant Device as 设备
+    participant NTP as NTP 服务器
+    participant Auth as JoyInside 认证服务
+    participant WS as JoyInside WS 服务
+
+    Note over Device: 设备启动，WiFi 连接成功
+
+    %% SNTP 时钟同步
+    rect rgb(240, 248, 255)
+        Note over Device,NTP: ① 时钟同步 (API 签名需要 UTC 时间戳)
+        Device->>NTP: SNTP 请求 (ntp.aliyun.com)
+        NTP-->>Device: UTC 时间
+        Device->>Device: 校验时间有效 (> 2024-01-01)
+    end
+
+    %% Token 获取
+    rect rgb(255, 250, 240)
+        Note over Device,Auth: ② 获取 Access Token
+        Device->>Device: 生成签名 (AK/SK + UTC时间戳)
+        Device->>Auth: POST /getAccessToken<br/>{accessKeyId, signature, timestamp}
+        Auth-->>Device: {accessToken, refreshToken, expireIn}
+        Device->>Device: 缓存 Token (8小时有效)
+    end
+
+    %% 设备注册（首次）
+    rect rgb(240, 255, 240)
+        Note over Device,Auth: ③ 设备注册 (首次启动)
+        alt Kconfig 已配置 Bot ID
+            Device->>Device: 使用配置的 Bot ID
+        else NVS 已存储 Bot ID
+            Device->>Device: 读取 NVS 中的 Bot ID
+        else 首次注册
+            Device->>Auth: POST /device/register<br/>{vendorId, appId, deviceId, type, name}
+            Auth-->>Device: {state: SUCCESS, data: botId}
+            Device->>Device: 存储 Bot ID 到 NVS
+        end
+    end
+
+    %% WebSocket 预连接
+    rect rgb(248, 248, 255)
+        Note over Device,WS: ④ WebSocket 预连接
+        Device->>WS: WSS /realtime?botId=xxx&sessionId=xxx<br/>Authorization: Bearer {accessToken}
+        WS-->>Device: 连接成功
+        Note over Device: 预连接就绪，等待唤醒
+    end
 ```
-设备启动联网
-    ↓
-检查 Kconfig 是否配置 Bot ID
-    ├── 有：使用配置的 Bot ID
-    └── 无：检查 NVS 是否存储 Bot ID
-              ├── 有：使用存储的 Bot ID
-              └── 无：调用设备注册 API
-                        ↓
-                  获取 Bot ID
-                        ↓
-                  存储到 NVS
-                        ↓
-                  后续连接使用此 Bot ID
-```
+
+#### 注册参数说明
 
 | 参数         | 来源           | 说明                                   |
 | ------------ | -------------- | -------------------------------------- |
 | **deviceId** | 设备 UUID      | 持久化存储在 NVS 中的 UUID v4          |
 | **name**     | LanDouBao-XXXX | 与配网名称相同（MAC后4位）             |
 | **type**     | 配置选项       | APP_ROBOT(测试) / PHYSICAL_ROBOT(生产) |
+| **vendorId** | Kconfig        | 厂商 ID，默认 100090                   |
+| **appId**    | Kconfig        | 应用空间 ID                            |
 
-> 💡 **注意**：Bot ID 一旦注册成功会存储在 NVS 中，设备重启后不会重新注册。如需重新注册，可清除 NVS 或在 Kconfig 中指定新的 Bot ID。
+#### Token 刷新机制
+
+```mermaid
+sequenceDiagram
+    participant Device as 设备
+    participant Auth as 认证服务
+
+    Note over Device: Token 即将过期 (提前5分钟)
+
+    alt 有 Refresh Token
+        Device->>Auth: POST /refreshToken<br/>{refreshToken}
+        Auth-->>Device: {accessToken, refreshToken, expireIn}
+    else 无 Refresh Token
+        Device->>Auth: POST /getAccessToken<br/>{accessKeyId, signature, timestamp}
+        Auth-->>Device: {accessToken, refreshToken, expireIn}
+    end
+
+    Device->>Device: 更新缓存的 Token
+```
+
+> 💡 **注意**：
+> - SNTP 同步失败会导致 API 签名失败（签名需要准确的 UTC 时间戳）
+> - Bot ID 一旦注册成功会存储在 NVS 中，设备重启后不会重新注册
+> - 如需重新注册，可清除 NVS 或在 Kconfig 中指定新的 Bot ID
+> - Token 有效期 8 小时，系统自动在过期前 5 分钟刷新
 
 ### 唤醒词发送配置
 
@@ -653,4 +714,4 @@ esp_log_level_set("JoyInsideAuth", ESP_LOG_DEBUG);
 
 ---
 
-*本文档最后更新于 2025年12月4日*
+*本文档最后更新于 2025年12月5日*
