@@ -8,6 +8,7 @@
 - [核心功能](#核心功能)
 - [系统架构](#系统架构)
 - [交互时序](#交互时序)
+- [协议状态机](#协议状态机)
 - [使用技巧](#使用技巧)
 - [配置说明](#配置说明)
 - [注意事项](#注意事项)
@@ -323,6 +324,191 @@ IDLE → LISTENING → PROCESSING → SPEAKING → IDLE
 
 ---
 
+## 协议状态机
+
+### 状态定义
+
+JoyInside 协议定义了 5 种对话状态：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         状态机概览                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ┌──────────┐                                                  │
+│   │   IDLE   │◄─────────────────────────────────────────────┐  │
+│   │  (待机)   │                                               │  │
+│   └────┬─────┘                                               │  │
+│        │ 唤醒词/ASR                                          │  │
+│        ▼                                                     │  │
+│   ┌──────────┐     CALL_AGENT_START_EVENT    ┌──────────┐   │  │
+│   │LISTENING │─────────────────────────────►│PROCESSING│   │  │
+│   │  (聆听)   │                               │  (处理)   │   │  │
+│   └────┬─────┘◄─────────────────────────────┘            │  │
+│        │                 EMPTY_CONTENT                    │  │
+│        │ ASR (打断)                                       │  │
+│        ▼                                                  │  │
+│   ┌──────────┐     TTS_SENTENCE_START        ┌──────────┐│  │
+│   │INTERRUPTED│◄────────────────────────────│ SPEAKING ││  │
+│   │  (打断)   │                              │  (播放)   │├──┘  │
+│   └──────────┘                              └────┬─────┘│     │
+│        │                                         │      │     │
+│        │                                         │ TTS_COMPLETE
+│        │     CALL_AGENT_INTERRUPTED              │      │     │
+│        └─────────────────────────────────────────┼──────┘     │
+│                                                  │            │
+│                                                  ▼            │
+│                                            返回 IDLE ─────────┘
+│                                                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 状态转换矩阵
+
+| 当前状态 \ 事件 | ASR         | CALL_AGENT_START_EVENT | TTS_SENTENCE_START | TTS_COMPLETE | INTERRUPT     | CALL_AGENT_INTERRUPTED | EMPTY_CONTENT |
+| --------------- | ----------- | ---------------------- | ------------------ | ------------ | ------------- | ---------------------- | ------------- |
+| **IDLE**        | → LISTENING | -                      | -                  | -            | (忽略)        | -                      | -             |
+| **LISTENING**   | -           | → PROCESSING           | -                  | -            | → INTERRUPTED | -                      | → LISTENING   |
+| **PROCESSING**  | -           | -                      | → SPEAKING         | -            | → INTERRUPTED | -                      | → LISTENING   |
+| **SPEAKING**    | (等待打断)  | -                      | -                  | → IDLE       | → INTERRUPTED | -                      | -             |
+| **INTERRUPTED** | -           | -                      | -                  | -            | -             | → IDLE                 | -             |
+
+> 💡 **优化说明**：
+> - `IDLE` 状态收到 `INTERRUPT` 事件时直接忽略，避免无意义的状态转换
+> - `SPEAKING` 状态收到 `ASR` 时不立即切换到 `LISTENING`，而是等待 `CALL_AGENT_INTERRUPTED` 事件
+
+### 完整数据流时序
+
+#### 正常对话流程
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Device as 设备
+    participant AFE as AFE/WakeNet
+    participant Protocol as JoyInside协议
+    participant Server as 云端服务
+
+    Note over Device: 状态: IDLE 🔵呼吸
+
+    User->>AFE: "你好东东"
+    AFE->>Protocol: wake_word_detected()
+    Protocol->>Protocol: SetDialogState(LISTENING)
+    Protocol->>Device: 播放提示音 "叮"
+    Note over Device: 状态: LISTENING 🔵常亮
+
+    User->>AFE: "今天天气怎么样"
+    AFE->>Protocol: 音频数据流
+    Protocol->>Server: WebSocket 发送音频
+
+    Server->>Protocol: ASR 事件 (实时转写)
+    Protocol->>Device: 显示转写文本
+
+    User->>Device: (说完停顿)
+    Server->>Protocol: CALL_AGENT_START_EVENT
+    Protocol->>Protocol: SetDialogState(PROCESSING)
+    Note over Device: 状态: PROCESSING 🔵常亮
+
+    Server->>Protocol: TTS_SENTENCE_START
+    Protocol->>Protocol: SetDialogState(SPEAKING)
+    Note over Device: 状态: SPEAKING 🔴常亮
+
+    Server->>Protocol: TTS 音频数据流
+    Protocol->>Device: 播放 TTS 音频
+    Protocol->>Device: 显示 TTS 字幕
+
+    Server->>Protocol: TTS_COMPLETE
+    Protocol->>Protocol: SetDialogState(IDLE)
+    Note over Device: 状态: IDLE 🔵呼吸
+```
+
+#### 用户打断流程
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Device as 设备
+    participant AFE as AFE/WakeNet
+    participant Protocol as JoyInside协议
+    participant Server as 云端服务
+
+    Note over Device: 状态: SPEAKING 🔴常亮
+    Note over Device: 正在播放 TTS...
+
+    User->>AFE: "停一下"
+    AFE->>Protocol: 检测到语音活动
+    Protocol->>Protocol: (SPEAKING状态,等待服务端)
+    Protocol->>Server: 发送音频数据
+
+    Server->>Protocol: ASR 事件 ("停一下")
+    Note over Protocol: 状态仍为 SPEAKING
+    
+    Protocol->>Server: INTERRUPT 信令
+    Protocol->>Protocol: SetDialogState(INTERRUPTED)
+    Protocol->>Device: 停止 TTS 播放
+    Note over Device: 状态: INTERRUPTED
+
+    Server->>Protocol: CALL_AGENT_INTERRUPTED
+    Protocol->>Protocol: SetDialogState(IDLE)
+    Note over Device: 状态: IDLE 🔵呼吸
+```
+
+#### 空内容回复流程
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Protocol as JoyInside协议
+    participant Server as 云端服务
+
+    Note over Protocol: 状态: LISTENING
+
+    User->>Protocol: "嗯" (无意义语音)
+    Protocol->>Server: 发送音频
+
+    Server->>Protocol: CALL_AGENT_START_EVENT
+    Note over Protocol: 状态: PROCESSING
+
+    Server->>Protocol: EMPTY_CONTENT
+    Protocol->>Protocol: SetDialogState(LISTENING)
+    Note over Protocol: 状态: LISTENING
+    Note over Protocol: 等待用户继续说话
+```
+
+### 事件详解
+
+#### 服务端事件
+
+| 事件                       | 触发时机       | 协议字段                        | 设备处理                       |
+| -------------------------- | -------------- | ------------------------------- | ------------------------------ |
+| **ASR**                    | 实时语音识别   | `asr_text`                      | 显示转写文本，判断是否需要打断 |
+| **CALL_AGENT_START_EVENT** | Agent 开始处理 | `event: call_agent_start_event` | 切换到 PROCESSING 状态         |
+| **TTS_SENTENCE_START**     | TTS 开始播放   | `event: tts_sentence_start`     | 切换到 SPEAKING 状态           |
+| **TTS_COMPLETE**           | TTS 播放完成   | `event: tts_complete`           | 切换到 IDLE 状态               |
+| **CALL_AGENT_INTERRUPTED** | 打断确认       | `event: call_agent_interrupted` | 从 INTERRUPTED 切换到 IDLE     |
+| **EMPTY_CONTENT**          | 空回复         | `event: empty_content`          | 回到 LISTENING 继续等待        |
+
+#### 设备端事件
+
+| 事件          | 触发时机         | 信令内容                 | 说明             |
+| ------------- | ---------------- | ------------------------ | ---------------- |
+| **INTERRUPT** | 用户说话打断 TTS | `{"signal":"interrupt"}` | 主动发送打断信令 |
+| **HEARTBEAT** | 每 15 秒         | `{"signal":"heartbeat"}` | 保持连接活跃     |
+| **CLOSE**     | 空闲超时         | `{"signal":"close"}`     | 关闭音频通道     |
+
+### LED 状态映射
+
+| 协议状态    | LED 颜色 | LED 行为 | 用户感知         |
+| ----------- | -------- | -------- | ---------------- |
+| IDLE        | 🔵 蓝色   | 呼吸     | 待机中，可唤醒   |
+| LISTENING   | 🔵 蓝色   | 常亮     | 正在聆听，请说话 |
+| PROCESSING  | 🔵 蓝色   | 常亮     | 正在思考         |
+| SPEAKING    | 🔴 红色   | 常亮     | AI 正在回答      |
+| INTERRUPTED | 🔵 蓝色   | 常亮     | 打断处理中       |
+| ERROR       | 🔴 红色   | 快闪     | 网络异常         |
+
+---
+
 ## 使用技巧
 
 ### 💡 最佳实践
@@ -561,6 +747,7 @@ esp_log_level_set("JoyInsideAuth", ESP_LOG_DEBUG);
 
 | 版本  | 日期       | 更新内容                                  |
 | ----- | ---------- | ----------------------------------------- |
+| 0.2.1 | 2025-12-05 | 优化打断状态机：IDLE状态忽略INTERRUPT事件，SPEAKING状态ASR不切换状态 |
 | 0.1.1 | 2025-12-04 | 优化网络重连机制：无限重试直到成功；修复 EMPTY_CONTENT 后 LED 状态；支持 INTERRUPT 事件 |
 | 0.1.0 | 2025-12-04 | 添加设备自动注册功能，Bot ID 自动获取并存储；蓝牙配网支持；双唤醒词支持 |
 | 0.0.2 | 2025-12-03 | 添加网络断开/重连提示音，优化自动重连机制 |
