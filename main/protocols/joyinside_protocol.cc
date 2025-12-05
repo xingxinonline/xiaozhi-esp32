@@ -886,7 +886,15 @@ void JoyInsideProtocol::HandleEvent(const cJSON* content) {
     cJSON* eventData = cJSON_GetObjectItem(content, "eventData");
     cJSON* roundId = cJSON_GetObjectItem(content, "roundId");
     
-    ESP_LOGI(TAG, "Received event: %s", type);
+    // 关键事件用 INFO，打断后的残留事件用 DEBUG
+    bool is_post_interrupt_event = (dialog_state_ == JoyInsideDialogState::kIdle) &&
+        (strcmp(type, "TTS_COMPLETE") == 0 || strcmp(type, "COMPLETE") == 0 || strcmp(type, "INTERRUPT") == 0);
+    
+    if (is_post_interrupt_event) {
+        ESP_LOGD(TAG, "Received event: %s (ignored in IDLE)", type);
+    } else {
+        ESP_LOGI(TAG, "Received event: %s", type);
+    }
     
     if (strcmp(type, "CFG_BOT_EVENT") == 0) {
         // 服务端配置事件
