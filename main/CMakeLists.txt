@@ -1034,6 +1034,17 @@ endif()
 function(build_default_assets_bin)
     # Set output path for generated assets.bin
     set(GENERATED_ASSETS_BIN "${CMAKE_BINARY_DIR}/generated_assets.bin")
+    set(EMOJI_COLLECTION_TO_BUILD "${DEFAULT_EMOJI_COLLECTION}")
+
+    # Custom wake word packages multinet assets. On 16MB flash layouts, the
+    # default 128px Noto emoji set can overflow the 8MB assets partition.
+    if(CONFIG_USE_CUSTOM_WAKE_WORD
+       AND CONFIG_ESPTOOLPY_FLASHSIZE_16MB
+       AND "${CONFIG_PARTITION_TABLE_CUSTOM_FILENAME}" STREQUAL "partitions/v2/16m.csv"
+       AND "${EMOJI_COLLECTION_TO_BUILD}" STREQUAL "noto-emoji_128")
+        set(EMOJI_COLLECTION_TO_BUILD "noto-emoji_64")
+        message(STATUS "Using ${EMOJI_COLLECTION_TO_BUILD} for default assets on 16MB flash with custom wake word to fit the assets partition")
+    endif()
     
     # Prepare arguments for build script
     set(BUILD_ARGS
@@ -1047,8 +1058,8 @@ function(build_default_assets_bin)
     endif()
     
     # Add default emoji collection if defined
-    if(DEFAULT_EMOJI_COLLECTION)
-        list(APPEND BUILD_ARGS "--emoji_collection" "${DEFAULT_EMOJI_COLLECTION}")
+    if(EMOJI_COLLECTION_TO_BUILD)
+        list(APPEND BUILD_ARGS "--emoji_collection" "${EMOJI_COLLECTION_TO_BUILD}")
     endif()
     
     # Add default assets extra files if defined
