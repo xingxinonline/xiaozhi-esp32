@@ -1,82 +1,154 @@
 #include "wifi_board.h"
-#include "codecs/box_audio_codec.h"
-#include "display/lcd_display.h"
-#include "display/emote_display.h"
 #include "application.h"
 #include "button.h"
+#include "codecs/box_audio_codec.h"
 #include "config.h"
-#include "i2c_device.h"
-#include "esp32_camera.h"
 #include "mcp_server.h"
+#include "led/gpio_led.h"
 
-#include <esp_log.h>
-#include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
-#include <driver/spi_common.h>
-#include <esp_lcd_touch_ft5x06.h>
-#include <esp_lvgl_port.h>
-#include <lvgl.h>
+#include <esp_adc/adc_cali.h>
+#include <esp_adc/adc_cali_scheme.h>
+#include <esp_adc/adc_oneshot.h>
+#include <esp_log.h>
 
 #define TAG "ZhibanAiReaderBoard"
 
-class Pca9557 : public I2cDevice {
-public:
-    Pca9557(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr) {
-        WriteReg(0x01, 0x03);
-        WriteReg(0x03, 0xf8);
-    }
-
-    void SetOutputState(uint8_t bit, uint8_t level) {
-        uint8_t data = ReadReg(0x01);
-        data = (data & ~(1 << bit)) | (level << bit);
-        WriteReg(0x01, data);
-    }
-};
-
-class CustomAudioCodec : public BoxAudioCodec {
+class ZhibanAiReaderBatteryMonitor {
 private:
-    Pca9557* pca9557_;
+    adc_oneshot_unit_handle_t battery_adc_handle_ = nullptr;
+    adc_oneshot_unit_handle_t charge_adc_handle_ = nullptr;
+    adc_cali_handle_t battery_adc_cali_handle_ = nullptr;
+    adc_cali_handle_t charge_adc_cali_handle_ = nullptr;
+    bool battery_adc_calibrated_ = false;
+    bool charge_adc_calibrated_ = false;
 
-public:
-    CustomAudioCodec(i2c_master_bus_handle_t i2c_bus, Pca9557* pca9557)
-        : BoxAudioCodec(i2c_bus,
-                       AUDIO_INPUT_SAMPLE_RATE,
-                       AUDIO_OUTPUT_SAMPLE_RATE,
-                       AUDIO_I2S_GPIO_MCLK,
-                       AUDIO_I2S_GPIO_BCLK,
-                       AUDIO_I2S_GPIO_WS,
-                       AUDIO_I2S_GPIO_DOUT,
-                       AUDIO_I2S_GPIO_DIN,
-                       GPIO_NUM_NC,
-                       AUDIO_CODEC_ES8311_ADDR,
-                       AUDIO_CODEC_ES7210_ADDR,
-                       AUDIO_INPUT_REFERENCE),
-          pca9557_(pca9557) {
+    bool InitializeCalibration(adc_unit_t unit, adc_channel_t channel, adc_cali_handle_t* out_handle) {
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+        adc_cali_curve_fitting_config_t cali_config = {
+            .unit_id = unit,
+            .chan = channel,
+            .atten = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        return adc_cali_create_scheme_curve_fitting(&cali_config, out_handle) == ESP_OK;
+#else
+        (void)unit;
+        (void)channel;
+        (void)out_handle;
+        return false;
+#endif
     }
 
-    virtual void EnableOutput(bool enable) override {
-        BoxAudioCodec::EnableOutput(enable);
-        if (enable) {
-            pca9557_->SetOutputState(1, 1);
-        } else {
-            pca9557_->SetOutputState(1, 0);
+    void DeinitializeCalibration(adc_cali_handle_t cali_handle, bool calibrated) {
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+        if (calibrated && cali_handle != nullptr) {
+            ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(cali_handle));
         }
+#else
+        (void)cali_handle;
+        (void)calibrated;
+#endif
+    }
+
+    void InitializeChannel(adc_unit_t unit,
+                           adc_channel_t channel,
+                           adc_oneshot_unit_handle_t* adc_handle,
+                           adc_cali_handle_t* cali_handle,
+                           bool* calibrated) {
+        adc_oneshot_unit_init_cfg_t init_config = {
+            .unit_id = unit,
+            .ulp_mode = ADC_ULP_MODE_DISABLE,
+        };
+        ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, adc_handle));
+
+        adc_oneshot_chan_cfg_t channel_config = {
+            .atten = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        ESP_ERROR_CHECK(adc_oneshot_config_channel(*adc_handle, channel, &channel_config));
+        *calibrated = InitializeCalibration(unit, channel, cali_handle);
+    }
+
+    int ReadVoltageMv(adc_oneshot_unit_handle_t adc_handle,
+                      adc_channel_t channel,
+                      adc_cali_handle_t cali_handle,
+                      bool calibrated) const {
+        int raw = 0;
+        int voltage_mv = 0;
+        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, channel, &raw));
+
+        if (calibrated) {
+            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(cali_handle, raw, &voltage_mv));
+        } else {
+            voltage_mv = raw * 3300 / 4095;
+        }
+
+        return voltage_mv;
+    }
+
+public:
+    ZhibanAiReaderBatteryMonitor() {
+        InitializeChannel(BATTERY_ADC_UNIT,
+                          BATTERY_ADC_CHANNEL,
+                          &battery_adc_handle_,
+                          &battery_adc_cali_handle_,
+                          &battery_adc_calibrated_);
+        InitializeChannel(CHARGE_ADC_UNIT,
+                          CHARGE_ADC_CHANNEL,
+                          &charge_adc_handle_,
+                          &charge_adc_cali_handle_,
+                          &charge_adc_calibrated_);
+    }
+
+    ~ZhibanAiReaderBatteryMonitor() {
+        DeinitializeCalibration(battery_adc_cali_handle_, battery_adc_calibrated_);
+        DeinitializeCalibration(charge_adc_cali_handle_, charge_adc_calibrated_);
+
+        if (battery_adc_handle_ != nullptr) {
+            ESP_ERROR_CHECK(adc_oneshot_del_unit(battery_adc_handle_));
+        }
+        if (charge_adc_handle_ != nullptr) {
+            ESP_ERROR_CHECK(adc_oneshot_del_unit(charge_adc_handle_));
+        }
+    }
+
+    int GetBatteryLevel() const {
+        float battery_voltage = static_cast<float>(ReadVoltageMv(battery_adc_handle_,
+                                                                 BATTERY_ADC_CHANNEL,
+                                                                 battery_adc_cali_handle_,
+                                                                 battery_adc_calibrated_)) /
+                                1000.0f;
+        float normalized_voltage = battery_voltage - 1.5f;
+        if (normalized_voltage < 0.0f) {
+            normalized_voltage = 0.0f;
+        }
+
+        int level = static_cast<int>(normalized_voltage * 200.0f);
+        if (level > 100) {
+            level = 100;
+        }
+        return level;
+    }
+
+    bool IsCharging() const {
+        int charge_voltage_mv = ReadVoltageMv(charge_adc_handle_,
+                                              CHARGE_ADC_CHANNEL,
+                                              charge_adc_cali_handle_,
+                                              charge_adc_calibrated_);
+        return charge_voltage_mv < 1000;
     }
 };
 
 class ZhibanAiReaderBoard : public WifiBoard {
 private:
-    i2c_master_bus_handle_t i2c_bus_;
-    i2c_master_dev_handle_t pca9557_handle_;
+    i2c_master_bus_handle_t i2c_bus_ = nullptr;
     Button boot_button_;
-    Display* display_;
-    Pca9557* pca9557_;
-    Esp32Camera* camera_;
+    ZhibanAiReaderBatteryMonitor* battery_monitor_ = nullptr;
 
     void InitializeI2c() {
-        // Initialize I2C peripheral
         i2c_master_bus_config_t i2c_bus_cfg = {
-            .i2c_port = (i2c_port_t)1,
+            .i2c_port = I2C_NUM_1,
             .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
             .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
             .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -88,26 +160,11 @@ private:
             },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
-
-        // Initialize PCA9557
-        pca9557_ = new Pca9557(i2c_bus_, 0x19);
-    }
-
-    void InitializeSpi() {
-        spi_bus_config_t buscfg = {};
-        buscfg.mosi_io_num = GPIO_NUM_40;
-        buscfg.miso_io_num = GPIO_NUM_NC;
-        buscfg.sclk_io_num = GPIO_NUM_41;
-        buscfg.quadwp_io_num = GPIO_NUM_NC;
-        buscfg.quadhd_io_num = GPIO_NUM_NC;
-        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
-        ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
-            // During startup (before connected), pressing BOOT button enters Wi-Fi config mode without reboot
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
                 return;
@@ -125,131 +182,12 @@ private:
 #endif
     }
 
-    void InitializeSt7789Display() {
-        esp_lcd_panel_io_handle_t panel_io = nullptr;
-        esp_lcd_panel_handle_t panel = nullptr;
-        // 液晶屏控制IO初始化
-        ESP_LOGD(TAG, "Install panel IO");
-        esp_lcd_panel_io_spi_config_t io_config = {};
-        io_config.cs_gpio_num = GPIO_NUM_NC;
-        io_config.dc_gpio_num = GPIO_NUM_39;
-        io_config.spi_mode = 2;
-        io_config.pclk_hz = 80 * 1000 * 1000;
-        io_config.trans_queue_depth = 10;
-        io_config.lcd_cmd_bits = 8;
-        io_config.lcd_param_bits = 8;
-        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
-
-        // 初始化液晶屏驱动芯片ST7789
-        ESP_LOGD(TAG, "Install LCD driver");
-        esp_lcd_panel_dev_config_t panel_config = {};
-        panel_config.reset_gpio_num = GPIO_NUM_NC;
-        panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
-        panel_config.bits_per_pixel = 16;
-        ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
-
-        esp_lcd_panel_reset(panel);
-        pca9557_->SetOutputState(0, 0);
-
-        esp_lcd_panel_init(panel);
-        esp_lcd_panel_invert_color(panel, true);
-        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
-        esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
-        esp_lcd_panel_disp_on_off(panel, true);
-
-#if CONFIG_USE_EMOTE_MESSAGE_STYLE
-        display_ = new emote::EmoteDisplay(panel, panel_io, DISPLAY_WIDTH, DISPLAY_HEIGHT);
-#else
-        display_ = new SpiLcdDisplay(panel_io, panel,
-            DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
-#endif
-    }
-
-    void InitializeTouch()
-    {
-        esp_lcd_touch_handle_t tp;
-        esp_lcd_touch_config_t tp_cfg = {
-            .x_max = DISPLAY_HEIGHT,
-            .y_max = DISPLAY_WIDTH,
-            .rst_gpio_num = GPIO_NUM_NC, // Shared with LCD reset
-            .int_gpio_num = GPIO_NUM_NC,
-            .levels = {
-                .reset = 0,
-                .interrupt = 0,
-            },
-            .flags = {
-                .swap_xy = 1,
-                .mirror_x = 1,
-                .mirror_y = 0,
-            },
-        };
-        esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-        esp_lcd_panel_io_i2c_config_t tp_io_config = {
-            .dev_addr = ESP_LCD_TOUCH_IO_I2C_FT5x06_ADDRESS,
-            .control_phase_bytes = 1,
-            .dc_bit_offset = 0,
-            .lcd_cmd_bits = 8,
-            .flags =
-            {
-                .disable_control_phase = 1,
-            }
-        };
-        tp_io_config.scl_speed_hz = 400000;
-
-        esp_lcd_new_panel_io_i2c(i2c_bus_, &tp_io_config, &tp_io_handle);
-        esp_lcd_touch_new_i2c_ft5x06(tp_io_handle, &tp_cfg, &tp);
-        assert(tp);
-
-        /* Add touch input (for selected screen) */
-        const lvgl_port_touch_cfg_t touch_cfg = {
-            .disp = lv_display_get_default(),
-            .handle = tp,
-        };
-
-        if(touch_cfg.disp) {
-            lvgl_port_add_touch(&touch_cfg);
-        } else {
-            ESP_LOGE(TAG, "Touch display is not initialized");
-        }
-    }
-
-    void InitializeCamera() {
-        // Open camera power
-        pca9557_->SetOutputState(2, 0);
-
-        camera_config_t config = {};
-        config.ledc_channel = LEDC_CHANNEL_2;
-        config.ledc_timer = LEDC_TIMER_2;
-        config.pin_d0 = CAMERA_PIN_D0;
-        config.pin_d1 = CAMERA_PIN_D1;
-        config.pin_d2 = CAMERA_PIN_D2;
-        config.pin_d3 = CAMERA_PIN_D3;
-        config.pin_d4 = CAMERA_PIN_D4;
-        config.pin_d5 = CAMERA_PIN_D5;
-        config.pin_d6 = CAMERA_PIN_D6;
-        config.pin_d7 = CAMERA_PIN_D7;
-        config.pin_xclk = CAMERA_PIN_XCLK;
-        config.pin_pclk = CAMERA_PIN_PCLK;
-        config.pin_vsync = CAMERA_PIN_VSYNC;
-        config.pin_href = CAMERA_PIN_HREF;
-        config.pin_sccb_sda = -1;
-        config.pin_sccb_scl = CAMERA_PIN_SIOC;
-        config.sccb_i2c_port = 1;
-        config.pin_pwdn = CAMERA_PIN_PWDN;
-        config.pin_reset = CAMERA_PIN_RESET;
-        config.xclk_freq_hz = XCLK_FREQ_HZ;
-        config.pixel_format = PIXFORMAT_RGB565;
-        config.frame_size = FRAMESIZE_QVGA;
-        config.jpeg_quality = 12;
-        config.fb_count = 1;
-        config.fb_location = CAMERA_FB_IN_PSRAM;
-        config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-
-        camera_ = new Esp32Camera(config);
+    void InitializePowerMonitor() {
+        battery_monitor_ = new ZhibanAiReaderBatteryMonitor();
     }
 
     void InitializeTools() {
-        auto &mcp_server = McpServer::GetInstance();
+        auto& mcp_server = McpServer::GetInstance();
         mcp_server.AddTool("self.system.reconfigure_wifi",
             "End this conversation and enter WiFi configuration mode.\n"
             "**CAUTION** You must ask the user to confirm this action.",
@@ -262,34 +200,46 @@ private:
 public:
     ZhibanAiReaderBoard() : boot_button_(BOOT_BUTTON_GPIO) {
         InitializeI2c();
-        InitializeSpi();
-        InitializeSt7789Display();
-        InitializeTouch();
         InitializeButtons();
-        InitializeCamera();
+        InitializePowerMonitor();
         InitializeTools();
+    }
 
-        GetBacklight()->RestoreBrightness();
+    ~ZhibanAiReaderBoard() override {
+        delete battery_monitor_;
+    }
+
+    virtual Led* GetLed() override {
+        static GpioLed led(STATUS_LED_GPIO, 1);
+        return &led;
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        static CustomAudioCodec audio_codec(
+        static BoxAudioCodec audio_codec(
             i2c_bus_,
-            pca9557_);
+            AUDIO_INPUT_SAMPLE_RATE,
+            AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK,
+            AUDIO_I2S_GPIO_BCLK,
+            AUDIO_I2S_GPIO_WS,
+            AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN,
+            AUDIO_PA_EN,
+            AUDIO_CODEC_ES8311_ADDR,
+            AUDIO_CODEC_ES7210_ADDR,
+            AUDIO_INPUT_REFERENCE);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
+        if (battery_monitor_ == nullptr) {
+            return false;
+        }
 
-    virtual Backlight* GetBacklight() override {
-        static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
-        return &backlight;
-    }
-
-    virtual Camera* GetCamera() override {
-        return camera_;
+        charging = battery_monitor_->IsCharging();
+        discharging = !charging;
+        level = battery_monitor_->GetBatteryLevel();
+        return true;
     }
 };
 

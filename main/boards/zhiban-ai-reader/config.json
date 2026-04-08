@@ -3,9 +3,7 @@
     "builds": [
         {
             "name": "zhiban-ai-reader",
-            "sdkconfig_append": [
-                "CONFIG_USE_DEVICE_AEC=y"
-            ]
+            "sdkconfig_append": []
         }
     ]
 }
