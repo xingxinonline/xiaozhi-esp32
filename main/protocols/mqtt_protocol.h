@@ -58,7 +58,6 @@ private:
     std::string DecodeHexString(const std::string& hex_string);
 
     bool SendText(const std::string& text) override;
-    std::string GetHelloMessage();
 };
 
 

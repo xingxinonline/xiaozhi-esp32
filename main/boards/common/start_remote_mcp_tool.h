@@ -1,6 +1,7 @@
 #ifndef START_REMOTE_MCP_TOOL_H
 #define START_REMOTE_MCP_TOOL_H
 
+#include <optional>
 #include <string>
 
 #include "mcp_server.h"
@@ -9,6 +10,11 @@ struct StartRemoteTriggerContext {
     std::string trigger_id;
     std::string source;
     std::string phase;
+    std::string book_title;
+    std::string book_author;
+    std::optional<int> start_page;
+    std::optional<int> end_page;
+    std::string plan_name;
 };
 
 class StartRemoteMcpTool {

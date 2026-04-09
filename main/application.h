@@ -10,6 +10,7 @@
 #include <mutex>
 #include <deque>
 #include <memory>
+#include <optional>
 
 #include "protocol.h"
 #include "ota.h"
@@ -104,6 +105,9 @@ public:
      */
     void StopListening();
 
+    void SetPendingTriggerContext(StartRemoteTriggerContext context);
+    std::optional<StartRemoteTriggerContext> GetAndClearPendingTriggerContext();
+
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
@@ -141,9 +145,12 @@ private:
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
+    bool close_audio_channel_on_idle_ = false;
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     StartRemoteMcpTool start_remote_tool_;
+    std::mutex pending_trigger_context_mutex_;
+    std::optional<StartRemoteTriggerContext> pending_trigger_context_;
 
 
     // Event handlers

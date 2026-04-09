@@ -31,11 +31,16 @@ void StartRemoteMcpTool::Initialize() {
     mcp_server.AddTool("self.conversation.start_remote",
         "Request the device to start a conversation remotely when it is idle. "
         "This call returns immediately after the start request is queued. "
-        "`trigger_id` is required. `source` defaults to `scheduled_task`, and `phase` is optional trigger context.",
+        "`trigger_id` is required. You can optionally inline reading context with source, phase, book_title, book_author, start_page, end_page, and plan_name.",
         PropertyList({
             Property("trigger_id", kPropertyTypeString),
             Property("source", kPropertyTypeString, std::string("scheduled_task")),
-            Property("phase", kPropertyTypeString, std::string(""))
+            Property("phase", kPropertyTypeString, std::string("")),
+            Property("book_title", kPropertyTypeString, std::string("")),
+            Property("book_author", kPropertyTypeString, std::string("")),
+            Property("start_page", kPropertyTypeInteger, -1),
+            Property("end_page", kPropertyTypeInteger, -1),
+            Property("plan_name", kPropertyTypeString, std::string(""))
         }),
         [this](const PropertyList& properties) -> ReturnValue {
             return HandleStartRemote(properties);
@@ -48,6 +53,18 @@ ReturnValue StartRemoteMcpTool::HandleStartRemote(const PropertyList& properties
     auto trigger_id = properties["trigger_id"].value<std::string>();
     auto source = properties["source"].value<std::string>();
     auto phase = properties["phase"].value<std::string>();
+    auto book_title = properties["book_title"].value<std::string>();
+    auto book_author = properties["book_author"].value<std::string>();
+    auto start_page_value = properties["start_page"].value<int>();
+    auto end_page_value = properties["end_page"].value<int>();
+    auto plan_name = properties["plan_name"].value<std::string>();
+
+    if (start_page_value < -1) {
+        throw std::runtime_error("Invalid start_page: must be omitted or >= 0");
+    }
+    if (end_page_value < -1) {
+        throw std::runtime_error("Invalid end_page: must be omitted or >= 0");
+    }
 
     auto& app = Application::GetInstance();
     auto state = app.GetDeviceState();
@@ -61,13 +78,23 @@ ReturnValue StartRemoteMcpTool::HandleStartRemote(const PropertyList& properties
         .trigger_id = std::move(trigger_id),
         .source = std::move(source),
         .phase = std::move(phase),
+        .book_title = std::move(book_title),
+        .book_author = std::move(book_author),
+        .start_page = start_page_value >= 0 ? std::optional<int>(start_page_value) : std::nullopt,
+        .end_page = end_page_value >= 0 ? std::optional<int>(end_page_value) : std::nullopt,
+        .plan_name = std::move(plan_name),
     };
 
-    ESP_LOGI(TAG, "Accepted remote conversation start: trigger_id=%s source=%s phase=%s",
+    ESP_LOGI(TAG, "Accepted remote conversation start: trigger_id=%s source=%s phase=%s book_title=%s start_page=%d end_page=%d plan_name=%s",
         last_trigger_context_.trigger_id.c_str(),
         last_trigger_context_.source.c_str(),
-        last_trigger_context_.phase.empty() ? "" : last_trigger_context_.phase.c_str());
+        last_trigger_context_.phase.empty() ? "" : last_trigger_context_.phase.c_str(),
+        last_trigger_context_.book_title.empty() ? "" : last_trigger_context_.book_title.c_str(),
+        last_trigger_context_.start_page.value_or(-1),
+        last_trigger_context_.end_page.value_or(-1),
+        last_trigger_context_.plan_name.empty() ? "" : last_trigger_context_.plan_name.c_str());
 
+    app.SetPendingTriggerContext(last_trigger_context_);
     app.StartListening();
     return CreateAcceptedResult(last_trigger_context_.trigger_id);
 }

@@ -533,6 +533,7 @@ void Application::InitializeProtocol() {
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
+                            close_audio_channel_on_idle_ = true;
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
@@ -821,8 +822,10 @@ void Application::HandleWakeWordDetectedEvent() {
 }
 
 void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
-    // Check state again in case it was changed during scheduling
-    if (GetDeviceState() != kDeviceStateConnecting) {
+    auto state = GetDeviceState();
+    // Wake word may reuse an already opened audio channel while staying in idle,
+    // or may arrive after a scheduled transition to connecting.
+    if (state != kDeviceStateConnecting && state != kDeviceStateIdle) {
         return;
     }
 
@@ -831,6 +834,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
             audio_service_.EnableWakeWordDetection(true);
             return;
         }
+    }
+
+    if (GetDeviceState() == kDeviceStateIdle) {
+        SetDeviceState(kDeviceStateConnecting);
     }
 
     ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
@@ -854,6 +861,10 @@ void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
 
+    if (new_state != kDeviceStateIdle) {
+        close_audio_channel_on_idle_ = false;
+    }
+
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto led = board.GetLed();
@@ -867,6 +878,13 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            if (close_audio_channel_on_idle_) {
+                close_audio_channel_on_idle_ = false;
+                if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                    ESP_LOGI(TAG, "Closing audio channel after manual-stop conversation completed");
+                    protocol_->CloseAudioChannel();
+                }
+            }
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -930,6 +948,22 @@ void Application::Schedule(std::function<void()>&& callback) {
         main_tasks_.push_back(std::move(callback));
     }
     xEventGroupSetBits(event_group_, MAIN_EVENT_SCHEDULE);
+}
+
+void Application::SetPendingTriggerContext(StartRemoteTriggerContext context) {
+    std::lock_guard<std::mutex> lock(pending_trigger_context_mutex_);
+    pending_trigger_context_ = std::move(context);
+}
+
+std::optional<StartRemoteTriggerContext> Application::GetAndClearPendingTriggerContext() {
+    std::lock_guard<std::mutex> lock(pending_trigger_context_mutex_);
+    if (!pending_trigger_context_.has_value()) {
+        return std::nullopt;
+    }
+
+    auto trigger_context = std::move(pending_trigger_context_);
+    pending_trigger_context_.reset();
+    return trigger_context;
 }
 
 void Application::AbortSpeaking(AbortReason reason) {

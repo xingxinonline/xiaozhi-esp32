@@ -12,6 +12,65 @@
 
 #define TAG "WS"
 
+namespace {
+
+void AddTriggerToHello(cJSON* root, const std::optional<StartRemoteTriggerContext>& trigger_context) {
+    if (!trigger_context.has_value()) {
+        return;
+    }
+
+    auto* trigger = cJSON_CreateObject();
+    cJSON_AddStringToObject(trigger, "trigger_id", trigger_context->trigger_id.c_str());
+    cJSON_AddStringToObject(trigger, "source", trigger_context->source.c_str());
+    if (!trigger_context->phase.empty()) {
+        cJSON_AddStringToObject(trigger, "phase", trigger_context->phase.c_str());
+    }
+    if (!trigger_context->book_title.empty()) {
+        cJSON_AddStringToObject(trigger, "book_title", trigger_context->book_title.c_str());
+    }
+    if (!trigger_context->book_author.empty()) {
+        cJSON_AddStringToObject(trigger, "book_author", trigger_context->book_author.c_str());
+    }
+    if (trigger_context->start_page.has_value()) {
+        cJSON_AddNumberToObject(trigger, "start_page", *trigger_context->start_page);
+    }
+    if (trigger_context->end_page.has_value()) {
+        cJSON_AddNumberToObject(trigger, "end_page", *trigger_context->end_page);
+    }
+    if (!trigger_context->plan_name.empty()) {
+        cJSON_AddStringToObject(trigger, "plan_name", trigger_context->plan_name.c_str());
+    }
+    cJSON_AddItemToObject(root, "trigger", trigger);
+}
+
+std::string CreateHelloMessage(int version, const std::optional<StartRemoteTriggerContext>& trigger_context) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "hello");
+    cJSON_AddNumberToObject(root, "version", version);
+    cJSON* features = cJSON_CreateObject();
+#if CONFIG_USE_SERVER_AEC
+    cJSON_AddBoolToObject(features, "aec", true);
+#endif
+    cJSON_AddBoolToObject(features, "mcp", true);
+    cJSON_AddItemToObject(root, "features", features);
+    cJSON_AddStringToObject(root, "transport", "websocket");
+    cJSON* audio_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(audio_params, "format", "opus");
+    cJSON_AddNumberToObject(audio_params, "sample_rate", 16000);
+    cJSON_AddNumberToObject(audio_params, "channels", 1);
+    cJSON_AddNumberToObject(audio_params, "frame_duration", OPUS_FRAME_DURATION_MS);
+    cJSON_AddItemToObject(root, "audio_params", audio_params);
+    AddTriggerToHello(root, trigger_context);
+
+    auto json_str = cJSON_PrintUnformatted(root);
+    std::string message(json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    return message;
+}
+
+} // namespace
+
 WebsocketProtocol::WebsocketProtocol() {
     event_group_handle_ = xEventGroupCreate();
 }
@@ -180,8 +239,13 @@ bool WebsocketProtocol::OpenAudioChannel() {
     }
 
     // Send hello message to describe the client
-    auto message = GetHelloMessage();
+    auto& app = Application::GetInstance();
+    auto trigger_context = app.GetAndClearPendingTriggerContext();
+    auto message = CreateHelloMessage(version_, trigger_context);
     if (!SendText(message)) {
+        if (trigger_context.has_value()) {
+            app.SetPendingTriggerContext(std::move(*trigger_context));
+        }
         return false;
     }
 
@@ -198,31 +262,6 @@ bool WebsocketProtocol::OpenAudioChannel() {
     }
 
     return true;
-}
-
-std::string WebsocketProtocol::GetHelloMessage() {
-    // keys: message type, version, audio_params (format, sample_rate, channels)
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "type", "hello");
-    cJSON_AddNumberToObject(root, "version", version_);
-    cJSON* features = cJSON_CreateObject();
-#if CONFIG_USE_SERVER_AEC
-    cJSON_AddBoolToObject(features, "aec", true);
-#endif
-    cJSON_AddBoolToObject(features, "mcp", true);
-    cJSON_AddItemToObject(root, "features", features);
-    cJSON_AddStringToObject(root, "transport", "websocket");
-    cJSON* audio_params = cJSON_CreateObject();
-    cJSON_AddStringToObject(audio_params, "format", "opus");
-    cJSON_AddNumberToObject(audio_params, "sample_rate", 16000);
-    cJSON_AddNumberToObject(audio_params, "channels", 1);
-    cJSON_AddNumberToObject(audio_params, "frame_duration", OPUS_FRAME_DURATION_MS);
-    cJSON_AddItemToObject(root, "audio_params", audio_params);
-    auto json_str = cJSON_PrintUnformatted(root);
-    std::string message(json_str);
-    cJSON_free(json_str);
-    cJSON_Delete(root);
-    return message;
 }
 
 void WebsocketProtocol::ParseServerHello(const cJSON* root) {
