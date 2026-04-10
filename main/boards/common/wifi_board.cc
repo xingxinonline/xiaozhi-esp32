@@ -54,7 +54,7 @@ void WifiBoard::StartNetwork() {
 
     // Initialize WiFi manager
     WifiManagerConfig config;
-    config.ssid_prefix = "Xiaozhi";
+    config.ssid_prefix = "LanDouBao";
     config.language = Lang::CODE;
     wifi_manager.Initialize(config);
 
@@ -105,16 +105,18 @@ void WifiBoard::TryWifiConnect() {
 
 void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
     switch (event) {
-        case NetworkEvent::Connected:
-            // Stop timeout timer
+        case NetworkEvent::Connected: {
             esp_timer_stop(connect_timer_);
 #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
-            // make sure blufi resources has been released
-            Blufi::GetInstance().deinit();
+            auto& blufi = Blufi::GetInstance();
+            if (!blufi.IsBleConnected()) {
+                blufi.deinit();
+            }
 #endif
             in_config_mode_ = false;
             ESP_LOGI(TAG, "Connected to WiFi: %s", data.c_str());
             break;
+        }
         case NetworkEvent::Scanning:
             ESP_LOGI(TAG, "WiFi scanning");
             break;

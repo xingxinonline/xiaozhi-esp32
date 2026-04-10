@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstring>
 #include <vector>
+#include "esp_event.h"
 #include "esp_blufi_api.h"
 #include "esp_err.h"
 #include "esp_timer.h"
@@ -40,6 +41,8 @@ public:
      * @return ESP_OK on success, otherwise an error code.
      */
     esp_err_t deinit();
+
+    bool IsBleConnected() const { return m_ble_is_connected; }
 
     // Delete copy constructor and assignment operator for singleton
     Blufi(const Blufi &) = delete;
@@ -144,4 +147,5 @@ private:
     std::vector<wifi_ap_record_t> m_ap_records;
     bool m_scan_in_progress = false;
     bool m_scan_should_save_ssid = true;
+    esp_event_handler_instance_t wifi_scan_event_instance_ = nullptr;
 };

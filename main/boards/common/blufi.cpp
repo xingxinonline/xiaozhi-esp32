@@ -4,15 +4,15 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "board.h"
 #include "esp_bt.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/task.h"
 #include "wifi_manager.h"
-
-#define BLUFI_DEVICE_NAME "Xiaozhi-Blufi"
 
 #ifdef CONFIG_BT_BLUEDROID_ENABLED
 #include "esp_bt_device.h"
@@ -62,6 +62,20 @@ void esp_blufi_btc_deinit(void);
 #include "ssid_manager.h"
 
 static const char* BLUFI_TAG = "BLUFI_CLASS";
+static constexpr TickType_t BLUFI_DISCONNECT_DELAY_TICKS = pdMS_TO_TICKS(3000);
+
+static std::string GenerateBlufiDeviceName() {
+    uint8_t mac[6];
+    esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    if (err != ESP_OK) {
+        ESP_LOGW(BLUFI_TAG, "Failed to read STA MAC for BLUFI name: %s", esp_err_to_name(err));
+        return "LanDouBao-BLUFI";
+    }
+
+    char device_name[32];
+    snprintf(device_name, sizeof(device_name), "LanDouBao-%02X%02X", mac[4], mac[5]);
+    return std::string(device_name);
+}
 
 static wifi_mode_t GetWifiModeWithFallback(const WifiManager& wifi) {
     if (wifi.IsConfigMode()) {
@@ -146,6 +160,11 @@ esp_err_t Blufi::deinit() {
             return ESP_OK;
         }
         m_deinited = true;
+        if (wifi_scan_event_instance_ != nullptr) {
+            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                  wifi_scan_event_instance_);
+            wifi_scan_event_instance_ = nullptr;
+        }
         ret = _host_deinit();
         if (ret) {
             ESP_LOGE(BLUFI_TAG, "Host deinit failed: %s", esp_err_to_name(ret));
@@ -544,49 +563,56 @@ void Blufi::start_wifi_scan() {
 
     m_scan_in_progress = true;
 
+    if (wifi_scan_event_instance_ == nullptr) {
+        esp_err_t register_err = esp_event_handler_instance_register(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, &Blufi::_wifi_scan_event_handler, this,
+            &wifi_scan_event_instance_);
+        if (register_err != ESP_OK) {
+            ESP_LOGE(BLUFI_TAG, "Failed to register WiFi scan handler: %s",
+                     esp_err_to_name(register_err));
+            m_scan_in_progress = false;
+            return;
+        }
+    }
+
     // Get current WiFi mode
     wifi_mode_t current_mode;
     esp_err_t err = esp_wifi_get_mode(&current_mode);
 
-    if (current_mode == WIFI_MODE_AP) {
-        // If in AP mode, temporarily switch to APSTA to allow scanning
-        ESP_LOGI(BLUFI_TAG, "WiFi in AP mode");
+    if (err != ESP_OK) {
+        ESP_LOGE(BLUFI_TAG, "Failed to get WiFi mode: %s", esp_err_to_name(err));
+        m_scan_in_progress = false;
+        return;
+    }
+
+    if (current_mode == WIFI_MODE_AP || current_mode == WIFI_MODE_NULL) {
+        ESP_LOGI(BLUFI_TAG, "Switching WiFi mode to STA for scan, current mode: %d", current_mode);
         err = esp_wifi_set_mode(WIFI_MODE_STA);
         if (err != ESP_OK) {
             ESP_LOGE(BLUFI_TAG, "Failed to set WiFi mode to STA: %s", esp_err_to_name(err));
             m_scan_in_progress = false;
             return;
         }
-        // Need to restart WiFi for mode change to take effect
+    } else if (current_mode != WIFI_MODE_STA && current_mode != WIFI_MODE_APSTA) {
+        ESP_LOGE(BLUFI_TAG, "Unexpected WiFi mode: %d", current_mode);
+        m_scan_in_progress = false;
+        return;
+    }
+
+    err = esp_wifi_scan_start(NULL, false);
+    if (err == ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGI(BLUFI_TAG, "WiFi is stopped, starting WiFi before scan");
         err = esp_wifi_start();
         if (err != ESP_OK) {
-            ESP_LOGE(BLUFI_TAG, "Failed to start WiFi after mode switch: %s", esp_err_to_name(err));
+            ESP_LOGE(BLUFI_TAG, "Failed to start WiFi before scan: %s", esp_err_to_name(err));
             m_scan_in_progress = false;
             return;
         }
-        // Register scan event handler
-        esp_event_handler_instance_t scan_event_instance;
-        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                            &Blufi::_wifi_scan_event_handler, this,
-                                            &scan_event_instance);
+        err = esp_wifi_scan_start(NULL, false);
+    }
 
-        // Start scan
-        err = esp_wifi_scan_start(NULL, false);
-        if (err != ESP_OK) {
-            ESP_LOGE(BLUFI_TAG, "Failed to start WiFi scan: %s", esp_err_to_name(err));
-            m_scan_in_progress = false;
-            return;
-        }
-    } else if (current_mode == WIFI_MODE_STA) {
-        // Start scan
-        err = esp_wifi_scan_start(NULL, false);
-        if (err != ESP_OK) {
-            ESP_LOGE(BLUFI_TAG, "Failed to start WiFi scan: %s", esp_err_to_name(err));
-            m_scan_in_progress = false;
-            return;
-        }
-    } else {
-        ESP_LOGE(BLUFI_TAG, "Unexpected WiFi mode: %d", current_mode);
+    if (err != ESP_OK) {
+        ESP_LOGE(BLUFI_TAG, "Failed to start WiFi scan: %s", esp_err_to_name(err));
         m_scan_in_progress = false;
         return;
     }
@@ -650,7 +676,11 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
     switch (event) {
         case ESP_BLUFI_EVENT_INIT_FINISH:
             ESP_LOGI(BLUFI_TAG, "BLUFI init finish");
-            esp_ble_gap_set_device_name(BLUFI_DEVICE_NAME);
+            {
+                auto device_name = GenerateBlufiDeviceName();
+                esp_ble_gap_set_device_name(device_name.c_str());
+                ESP_LOGI(BLUFI_TAG, "BLUFI device name: %s", device_name.c_str());
+            }
             esp_blufi_adv_start();
             break;
         case ESP_BLUFI_EVENT_DEINIT_FINISH:
@@ -785,6 +815,13 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
                         ESP_LOGI(BLUFI_TAG, "connected to WiFi");
 
                         if (self->m_ble_is_connected) {
+                            ESP_LOGI(BLUFI_TAG,
+                                     "Delay BLUFI disconnect to allow client to receive report");
+                            vTaskDelay(BLUFI_DISCONNECT_DELAY_TICKS);
+
+                        }
+
+                        if (self->m_ble_is_connected) {
                             esp_blufi_disconnect();
                         }
                     } else {
@@ -871,6 +908,19 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
             _send_wifi_list();
             break;
         }
+        case ESP_BLUFI_EVENT_RECV_CUSTOM_DATA:
+            ESP_LOGI(BLUFI_TAG,"Recv Custom Data %" PRIu32 "\n", param->custom_data.data_len);
+            ESP_LOG_BUFFER_HEX("Custom Data", param->custom_data.data, param->custom_data.data_len);
+            if(param->custom_data.data_len == 2 && param->custom_data.data[0] == 0xFF && param->custom_data.data[1] == 0xA1)
+            {
+                ESP_LOGI(BLUFI_TAG,"Recv Get Device UUID Command\n");
+                static uint8_t device_uuid[39] = {0xFF, 0xA1};
+                auto uuid = Board::GetInstance().GetUuid();
+                snprintf(reinterpret_cast<char*>(device_uuid) + 2, sizeof(device_uuid) - 2, "%s", uuid.c_str());
+                ESP_LOGI(BLUFI_TAG,"Device UUID: %s\n", device_uuid + 2);
+                esp_blufi_send_custom_data(device_uuid, 38);
+            }
+            break;
         default:
             ESP_LOGW(BLUFI_TAG, "Unhandled event: %d", event);
             break;
