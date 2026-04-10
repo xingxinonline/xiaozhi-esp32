@@ -7,10 +7,11 @@
 当前链路验证状态（2026-04-09 更新）：
 
 ```
-landoubao → [adapter ✅] → [gateway ✅ trigger透传已实现] → [固件 ✅ MCP+hello trigger] → [server 待对接]
+landoubao → [adapter ✅] → [gateway ✅ trigger透传已部署] → [固件 ✅ MCP+hello trigger] → [server ✅ trigger消费已实现]
 ```
 
-adapter 已成功发送 MCP 请求到真实设备，设备返回 `accepted` 并拉起对话。hello trigger 注入已实现。
+全链路已验证通过：adapter → gateway → MCP → 设备拉起对话 → hello 携带 trigger → server 首轮提醒播报。
+~~已知问题：ManualStop 模式下 TTS 播完后音频通道未自动关闭~~ — Phase 5 已修复（075d6183）。
 
 ## Requirements and Constraints
 
@@ -197,7 +198,7 @@ hello 消息扩展（向后兼容，无此字段时 server 行为不变）：
 - 设备端在对话结束后用 trigger_id 调 adapter 做结果回写（如果 server 不做此事）。
 - 根据 phase 不同（reading_remind vs reading_question）调整设备端行为（如 LED 颜色/提示音）。
 
-### Phase 5: ManualStop 后主动关闭音频通道（待实现）
+### Phase 5: ManualStop 后主动关闭音频通道 ✅（075d6183）
 
 > **2026-04-09 发现**：远程唤醒使用 `kListeningModeManualStop`。TTS 播完后设备
 > `HandleStopTtsEvent()` → `SetDeviceState(kDeviceStateIdle)`。但 `HandleStateChangedEvent()`
