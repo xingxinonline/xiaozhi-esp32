@@ -38,8 +38,6 @@ void esp_blufi_adv_start(void);
 
 void esp_blufi_adv_stop(void);
 
-void esp_blufi_disconnect(void);
-
 void btc_blufi_report_error(esp_blufi_error_state_t state);
 
 #ifdef CONFIG_BT_BLUEDROID_ENABLED
@@ -62,7 +60,6 @@ void esp_blufi_btc_deinit(void);
 #include "ssid_manager.h"
 
 static const char* BLUFI_TAG = "BLUFI_CLASS";
-static constexpr TickType_t BLUFI_DISCONNECT_DELAY_TICKS = pdMS_TO_TICKS(3000);
 
 static std::string GenerateBlufiDeviceName() {
     uint8_t mac[6];
@@ -813,17 +810,6 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
                         esp_blufi_send_wifi_conn_report(mode, ESP_BLUFI_STA_CONN_SUCCESS,
                                                         softap_conn_num, &info);
                         ESP_LOGI(BLUFI_TAG, "connected to WiFi");
-
-                        if (self->m_ble_is_connected) {
-                            ESP_LOGI(BLUFI_TAG,
-                                     "Delay BLUFI disconnect to allow client to receive report");
-                            vTaskDelay(BLUFI_DISCONNECT_DELAY_TICKS);
-
-                        }
-
-                        if (self->m_ble_is_connected) {
-                            esp_blufi_disconnect();
-                        }
                     } else {
                         self->m_sta_is_connecting = false;
                         self->m_sta_connected = false;
