@@ -105,6 +105,8 @@ public:
      */
     void StopListening();
 
+    void SetPendingListeningMode(ListeningMode mode);
+    ListeningMode GetAndClearPendingListeningMode();
     void SetPendingTriggerContext(StartRemoteTriggerContext context);
     std::optional<StartRemoteTriggerContext> GetAndClearPendingTriggerContext();
 
@@ -115,6 +117,7 @@ public:
     void SendMcpMessage(const std::string& payload);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
+    ListeningMode GetDefaultListeningMode() const;
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
     
@@ -149,6 +152,8 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     StartRemoteMcpTool start_remote_tool_;
+    std::mutex pending_listening_mode_mutex_;
+    std::optional<ListeningMode> pending_listening_mode_;
     std::mutex pending_trigger_context_mutex_;
     std::optional<StartRemoteTriggerContext> pending_trigger_context_;
 
@@ -174,7 +179,6 @@ private:
     void InitializeProtocol();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
-    ListeningMode GetDefaultListeningMode() const;
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

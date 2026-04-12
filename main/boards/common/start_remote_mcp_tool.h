@@ -10,6 +10,7 @@ struct StartRemoteTriggerContext {
     std::string trigger_id;
     std::string source;
     std::string phase;
+    std::string book_id;
     std::string book_title;
     std::string book_author;
     std::optional<int> start_page;

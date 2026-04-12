@@ -743,17 +743,19 @@ void Application::HandleStartListeningEvent() {
         ESP_LOGE(TAG, "Protocol not initialized");
         return;
     }
+
+    auto mode = GetAndClearPendingListeningMode();
     
     if (state == kDeviceStateIdle) {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
-            Schedule([this]() {
-                ContinueOpenAudioChannel(kListeningModeManualStop);
+            Schedule([this, mode]() {
+                ContinueOpenAudioChannel(mode);
             });
             return;
         }
-        SetListeningMode(kListeningModeManualStop);
+        SetListeningMode(mode);
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
         SetListeningMode(kListeningModeManualStop);
@@ -948,6 +950,18 @@ void Application::Schedule(std::function<void()>&& callback) {
         main_tasks_.push_back(std::move(callback));
     }
     xEventGroupSetBits(event_group_, MAIN_EVENT_SCHEDULE);
+}
+
+void Application::SetPendingListeningMode(ListeningMode mode) {
+    std::lock_guard<std::mutex> lock(pending_listening_mode_mutex_);
+    pending_listening_mode_ = mode;
+}
+
+ListeningMode Application::GetAndClearPendingListeningMode() {
+    std::lock_guard<std::mutex> lock(pending_listening_mode_mutex_);
+    auto mode = pending_listening_mode_.value_or(kListeningModeManualStop);
+    pending_listening_mode_.reset();
+    return mode;
 }
 
 void Application::SetPendingTriggerContext(StartRemoteTriggerContext context) {

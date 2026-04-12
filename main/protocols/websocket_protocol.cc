@@ -25,6 +25,9 @@ void AddTriggerToHello(cJSON* root, const std::optional<StartRemoteTriggerContex
     if (!trigger_context->phase.empty()) {
         cJSON_AddStringToObject(trigger, "phase", trigger_context->phase.c_str());
     }
+    if (!trigger_context->book_id.empty()) {
+        cJSON_AddStringToObject(trigger, "book_id", trigger_context->book_id.c_str());
+    }
     if (!trigger_context->book_title.empty()) {
         cJSON_AddStringToObject(trigger, "book_title", trigger_context->book_title.c_str());
     }

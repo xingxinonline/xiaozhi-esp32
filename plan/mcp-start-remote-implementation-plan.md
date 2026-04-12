@@ -4,14 +4,14 @@
 
 在 xiaozhi-esp32 固件中实现 `self.conversation.start_remote` MCP 工具，使 adapter 可以通过 mqtt-gateway 远程启动设备对话。这是定时阅读提醒链路中**唯一缺失的一环**。
 
-当前链路验证状态（2026-04-09 更新）：
+当前链路验证状态（2026-04-10 更新）：
 
 ```
 landoubao → [adapter ✅] → [gateway ✅ trigger透传已部署] → [固件 ✅ MCP+hello trigger] → [server ✅ trigger消费已实现]
 ```
 
-全链路已验证通过：adapter → gateway → MCP → 设备拉起对话 → hello 携带 trigger → server 首轮提醒播报。
-~~已知问题：ManualStop 模式下 TTS 播完后音频通道未自动关闭~~ — Phase 5 已修复（075d6183）。
+`reading_remind` 全链路已验证通过。
+`reading_question` 的固件侧 Phase 6（`listening_mode` + `book_id`）已实现，待联调验证多轮对话。
 
 ## Requirements and Constraints
 
@@ -196,7 +196,7 @@ hello 消息扩展（向后兼容，无此字段时 server 行为不变）：
 ### Phase 4: 后续扩展（当前不实现）
 
 - 设备端在对话结束后用 trigger_id 调 adapter 做结果回写（如果 server 不做此事）。
-- 根据 phase 不同（reading_remind vs reading_question）调整设备端行为（如 LED 颜色/提示音）。
+- ~~根据 phase 不同（reading_remind vs reading_question）调整设备端行为（如 LED 颜色/提示音）。~~ → 设备行为差异由 `listening_mode` 控制（Phase 6），非 phase 业务语义。
 
 ### Phase 5: ManualStop 后主动关闭音频通道 ✅（075d6183）
 
@@ -234,6 +234,91 @@ case kDeviceStateIdle:
 1. adapter 推送唤醒设备 → TTS 播完 → 观察 gateway 日志 bridge 是否在几秒内关闭。
 2. TTS 播完后立即再次推送，确认 adapter 不再返回 `device_busy`。
 3. 回归：普通按钮唤醒对话流程不受影响（按钮走 AutoStop 路径不受此分支影响）。
+
+### Phase 6: listening_mode + book_id 参数支持 ✅ 已实现
+
+> 2026-04-10 更新：固件侧已支持 `listening_mode` one-shot 下发与 `book_id` 透传 hello trigger，编译验证通过；`reading_question` 仍需真实链路联调确认多轮行为。
+> **对应主项目任务：** 整体推进方案 § 4J.1
+> **架构设计参见：** 整体架构设计 § 5.5 远程对话模式
+
+**背景：** 当前 `start_remote` 硬编码 `kListeningModeManualStop`，TTS 播完即断连。这对 `reading_remind`（单向广播）正确，但 `reading_question`（阅读提问）需要多轮对话——TTS 播完后设备应进入 Listening 等待用户语音回答。同时，`book_id`（来源于唤醒请求中的 `material_id`，即 ISBN）需要透传到 hello trigger，供 server 按需调用 adapter 内容 API 获取页级原文。
+
+**设计方案：** 新增两个 MCP 参数——`listening_mode` 控制对话行为，`book_id` 透传内容标识。固件不理解业务含义（什么是"提醒"/"提问"），只执行行为指令和透传参数。
+
+**tool 参数扩展：**
+
+| 参数             | 类型   | 必选 | 说明                                                  |
+| ---------------- | ------ | ---- | ----------------------------------------------------- |
+| `listening_mode` | string | 否   | `manual_stop`（默认）、`default`（使用设备默认模式）  |
+| `book_id`        | string | 否   | 图书标识（ISBN），透传到 hello trigger 供 server 消费 |
+| （其余参数不变） |        |      |                                                       |
+
+**回调逻辑改动：**
+
+```cpp
+// 在 MCP 回调中读取 listening_mode 和 book_id
+std::string mode_str = properties.GetValue("listening_mode");
+ListeningMode mode = kListeningModeManualStop;  // 默认，向后兼容
+if (mode_str == "default") {
+    mode = app.GetDefaultListeningMode();  // 有 AEC → realtime，无 AEC → auto
+}
+
+std::string book_id = properties.GetValue("book_id");
+// book_id 存入 trigger context，由 AddTriggerToHello() 写入 hello 消息
+ctx.book_id = book_id;
+
+// 传入 StartListening 或保存到成员变量供 ContinueOpenAudioChannel 使用
+app.SetPendingListeningMode(mode);
+app.StartListening();
+```
+
+**Application 改动：**
+
+1. 新增 `SetPendingListeningMode(ListeningMode mode)` / `GetAndClearPendingListeningMode()`，类似已有的 trigger context 暂存模式。
+2. `ContinueOpenAudioChannel()` 中使用 pending listening mode 而非硬编码：
+   ```cpp
+   // 当前：ContinueOpenAudioChannel(kListeningModeManualStop)
+   // 改为：
+  ListeningMode mode = GetAndClearPendingListeningMode();  // 默认 ManualStop
+   ContinueOpenAudioChannel(mode);
+   ```
+
+**状态机效果对比：**
+
+```
+manual_stop（现有，不变）：
+  SPEAKING → Idle → CloseAudioChannel → 设备返回待机
+
+default（新增，有 AEC 设备 → realtime）：
+  SPEAKING → Listening(Realtime) → 用户语音(ASR) → server LLM → TTS → SPEAKING → ...
+  超时 → Idle → CloseAudioChannel
+
+default（新增，无 AEC 设备 → auto）：
+  SPEAKING → Listening(Auto) → 用户语音(VAD→ASR) → server LLM → TTS → SPEAKING → ...
+  超时 → Idle → CloseAudioChannel
+```
+
+**涉及文件：**
+
+| 文件                                          | 操作 | 说明                                                                             |
+| --------------------------------------------- | ---- | -------------------------------------------------------------------------------- |
+| `main/boards/common/start_remote_mcp_tool.cc` | 修改 | PropertyList 加 `book_id`；读取 `listening_mode` + `book_id`，传递给 Application |
+| `main/boards/common/start_remote_mcp_tool.h`  | 修改 | `StartRemoteTriggerContext` 结构体加 `book_id` 成员                              |
+| `main/application.h`                          | 修改 | 新增 pending listening mode 暂存方法和成员                                       |
+| `main/application.cc`                         | 修改 | `ContinueOpenAudioChannel` 使用 pending mode                                     |
+| `main/protocols/mqtt_protocol.cc`             | 修改 | `AddTriggerToHello()` 增加 `book_id` 字段输出                                    |
+| `main/protocols/websocket_protocol.cc`        | 修改 | `AddTriggerToHello()` 增加 `book_id` 字段输出                                    |
+
+**向后兼容性：**
+- `listening_mode` 参数缺省时默认 `manual_stop`，现有行为不变。
+- gateway 透传 MCP 参数，无需修改。
+- server 不感知 listening_mode（server 的多轮对话本身就是通用能力）。
+
+**验证方式：**
+1. `task_simulator --phase reading_question` → adapter 传 `listening_mode=default` → 设备 TTS 播完后进入设备默认监听模式（AEC 设备 → Realtime）。
+2. 在设备上语音回答 → server ASR → LLM 追问 → 多轮对话。
+3. 回归：`--phase reading_remind` → `listening_mode=manual_stop` → TTS 播完断连，行为不变。
+4. 回归：不传 `listening_mode` → 默认 ManualStop，行为不变。
 
 ## 代码参考
 
@@ -295,7 +380,14 @@ mcp_server.AddUserOnlyTools();
 | `main/boards/common/start_remote_mcp_tool.cc` | 新建     | tool 注册 + 回调实现           |
 | `main/CMakeLists.txt`                         | 修改     | 添加 .cc 到公共编译列表        |
 | `main/application.h`                          | 修改     | 添加 `StartRemoteMcpTool` 成员 |
-| `main/application.cc`                         | 修改     | Initialize() 中注册 tool       |
+| `main/application.cc`                         | 修改     | Initialize() 中注册 tool；Phase 6: pending listening mode |
+
+后续新增（Phase 6）：
+- `main/boards/common/start_remote_mcp_tool.cc` — PropertyList 加 `book_id`；读取 `listening_mode` + `book_id`
+- `main/boards/common/start_remote_mcp_tool.h` — `StartRemoteTriggerContext` 加 `book_id` 成员
+- `main/application.h` — 新增 pending listening mode 方法
+- `main/protocols/mqtt_protocol.cc` — `AddTriggerToHello()` 加 `book_id`
+- `main/protocols/websocket_protocol.cc` — `AddTriggerToHello()` 加 `book_id`
 
 ## Testing and Verification
 
