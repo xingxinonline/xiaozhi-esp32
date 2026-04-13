@@ -162,26 +162,37 @@ void WifiBoard::StartWifiConfigMode() {
     in_config_mode_ = true;
     // Transition to wifi configuring state
     Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);
+
+    bool wifi_config_alert_scheduled = false;
+    auto schedule_wifi_config_alert = [&wifi_config_alert_scheduled](std::string hint) {
+        if (wifi_config_alert_scheduled) {
+            return;
+        }
+
+        wifi_config_alert_scheduled = true;
+        Application::GetInstance().Schedule([hint = std::move(hint)]() {
+            Application::GetInstance().Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+        });
+    };
 #ifdef CONFIG_USE_HOTSPOT_WIFI_PROVISIONING
     auto& wifi_manager = WifiManager::GetInstance();
 
     wifi_manager.StartConfigAp();
 
-    // Show config prompt after a short delay
-    Application::GetInstance().Schedule([&wifi_manager]() {
-        std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
-        hint += wifi_manager.GetApSsid();
-        hint += Lang::Strings::ACCESS_VIA_BROWSER;
-        hint += wifi_manager.GetApWebUrl();
-
-        Application::GetInstance().Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
-    });
+    std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
+    hint += wifi_manager.GetApSsid();
+    hint += Lang::Strings::ACCESS_VIA_BROWSER;
+    hint += wifi_manager.GetApWebUrl();
+    schedule_wifi_config_alert(std::move(hint));
 #elif CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
     auto &blufi = Blufi::GetInstance();
     // initialize esp-blufi protocol
     blufi.init();
+    schedule_wifi_config_alert(Lang::Strings::ENTERING_WIFI_CONFIG_MODE);
 #endif
 #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
+    schedule_wifi_config_alert(Lang::Strings::ENTERING_WIFI_CONFIG_MODE);
+
     // Start acoustic provisioning task
     auto codec = Board::GetInstance().GetAudioCodec();
     int channel = codec ? codec->input_channels() : 1;

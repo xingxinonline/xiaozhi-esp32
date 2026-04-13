@@ -264,6 +264,10 @@ void Application::HandleNetworkConnectedEvent() {
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
+        Schedule([this]() {
+            audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+        });
+
         // Network is ready, start activation
         SetDeviceState(kDeviceStateActivating);
         if (activation_task_handle_ != nullptr) {
@@ -314,11 +318,6 @@ void Application::HandleActivationDoneEvent() {
     ota_.reset();
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-
-    Schedule([this]() {
-        // Play the success sound to indicate the device is ready
-        audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
-    });
 }
 
 void Application::ActivationTask() {
