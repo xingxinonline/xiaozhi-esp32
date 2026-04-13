@@ -73,6 +73,11 @@ def get_board_name(folder):
         return basename.split("_")[1]
     raise Exception(f"Unknown board name: {basename}")
 
+def get_binary_filename(project_name):
+    if project_name:
+        return f"{project_name}.bin"
+    return "app.bin"
+
 def find_app_partition(data):
     partition_begin = 0x8000
     partition_end = partition_begin + 0x4000
@@ -141,15 +146,14 @@ def read_binary(dir_path):
             return
 
     image_data = app_data[:image_size]
+    desc = get_app_desc(segments[0])
     
     # extract bin file
-    bin_path = os.path.join(dir_path, "xiaozhi.bin")
+    bin_path = os.path.join(dir_path, get_binary_filename(desc["name"]))
     if not os.path.exists(bin_path):
         print("extract bin file to", bin_path)
         open(bin_path, "wb").write(image_data)
 
-    # The app desc is in the first segment
-    desc = get_app_desc(segments[0])
     return {
         "chip_id": chip_id,
         "flash_size": flash_size,
@@ -235,7 +239,7 @@ def main():
                 info = read_binary(folder)
                 target_dir = os.path.join("firmwares", tag)
                 info["tag"] = tag
-                info["url"] = os.path.join(os.environ['OSS_BUCKET_URL'], target_dir, "xiaozhi.bin")
+                info["url"] = os.path.join(os.environ['OSS_BUCKET_URL'], target_dir, get_binary_filename(info["application"]["name"]))
                 open(info_path, "w", encoding="utf-8").write(json.dumps(info, indent=4))
                 # upload all file to oss
                 upload_dir_to_oss(folder, target_dir)
