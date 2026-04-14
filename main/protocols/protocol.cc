@@ -4,6 +4,21 @@
 
 #define TAG "Protocol"
 
+namespace {
+
+const char* AbortReasonToString(AbortReason reason) {
+    switch (reason) {
+        case kAbortReasonWakeWordDetected:
+            return "wake_word_detected";
+        case kAbortReasonRemoteTrigger:
+            return "remote_trigger";
+        default:
+            return nullptr;
+    }
+}
+
+} // namespace
+
 void Protocol::OnIncomingJson(std::function<void(const cJSON* root)> callback) {
     on_incoming_json_ = callback;
 }
@@ -39,13 +54,31 @@ void Protocol::SetError(const std::string& message) {
     }
 }
 
-void Protocol::SendAbortSpeaking(AbortReason reason) {
-    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"abort\"";
-    if (reason == kAbortReasonWakeWordDetected) {
-        message += ",\"reason\":\"wake_word_detected\"";
+void Protocol::SendAbortSpeaking(AbortReason reason, const std::string& trigger_json) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "abort");
+
+    auto reason_str = AbortReasonToString(reason);
+    if (reason_str != nullptr) {
+        cJSON_AddStringToObject(root, "reason", reason_str);
     }
-    message += "}";
-    SendText(message);
+
+    if (!trigger_json.empty()) {
+        cJSON* trigger = cJSON_Parse(trigger_json.c_str());
+        if (trigger != nullptr) {
+            cJSON_AddItemToObject(root, "trigger", trigger);
+        } else {
+            ESP_LOGW(TAG, "Failed to parse trigger JSON for abort payload");
+        }
+    }
+
+    char* message = cJSON_PrintUnformatted(root);
+    if (message != nullptr) {
+        SendText(message);
+        cJSON_free(message);
+    }
+    cJSON_Delete(root);
 }
 
 void Protocol::SendWakeWordDetected(const std::string& wake_word) {

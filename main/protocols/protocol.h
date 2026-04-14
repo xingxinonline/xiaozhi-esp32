@@ -32,7 +32,8 @@ struct BinaryProtocol3 {
 
 enum AbortReason {
     kAbortReasonNone,
-    kAbortReasonWakeWordDetected
+    kAbortReasonWakeWordDetected,
+    kAbortReasonRemoteTrigger
 };
 
 enum ListeningMode {
@@ -71,7 +72,7 @@ public:
     virtual void SendWakeWordDetected(const std::string& wake_word);
     virtual void SendStartListening(ListeningMode mode);
     virtual void SendStopListening();
-    virtual void SendAbortSpeaking(AbortReason reason);
+    virtual void SendAbortSpeaking(AbortReason reason, const std::string& trigger_json = "");
     virtual void SendMcpMessage(const std::string& message);
 
 protected:

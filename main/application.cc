@@ -979,12 +979,16 @@ std::optional<StartRemoteTriggerContext> Application::GetAndClearPendingTriggerC
     return trigger_context;
 }
 
-void Application::AbortSpeaking(AbortReason reason) {
+bool Application::AbortSpeaking(AbortReason reason, const std::string& trigger_json) {
     ESP_LOGI(TAG, "Abort speaking");
-    aborted_ = true;
-    if (protocol_) {
-        protocol_->SendAbortSpeaking(reason);
+    if (!protocol_ || !protocol_->IsAudioChannelOpened()) {
+        ESP_LOGW(TAG, "Cannot abort speaking: audio channel is not opened");
+        return false;
     }
+
+    aborted_ = true;
+    protocol_->SendAbortSpeaking(reason, trigger_json);
+    return true;
 }
 
 void Application::SetListeningMode(ListeningMode mode) {

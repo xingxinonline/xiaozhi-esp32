@@ -85,7 +85,7 @@ public:
     void Alert(const char* status, const char* message, const char* emotion = "", const std::string_view& sound = "");
     void DismissAlert();
 
-    void AbortSpeaking(AbortReason reason);
+    bool AbortSpeaking(AbortReason reason, const std::string& trigger_json = "");
 
     /**
      * Toggle chat state (event-based, thread-safe)

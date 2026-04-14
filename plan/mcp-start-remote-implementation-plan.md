@@ -4,14 +4,17 @@
 
 在 xiaozhi-esp32 固件中实现 `self.conversation.start_remote` MCP 工具，使 adapter 可以通过 mqtt-gateway 远程启动设备对话。这是定时阅读提醒链路中**唯一缺失的一环**。
 
-当前链路验证状态（2026-04-10 更新）：
+当前链路验证状态（2026-04-14 更新）：
 
 ```
-landoubao → [adapter ✅] → [gateway ✅ trigger透传已部署] → [固件 ✅ MCP+hello trigger] → [server ✅ trigger消费已实现]
+landoubao → [adapter ⚠️ busy拒绝待改] → [gateway ✅ trigger透传已部署] → [固件 ✅ MCP+hello trigger+abort注入] → [server ✅ trigger消费+abort注入]
 ```
 
 `reading_remind` 全链路已验证通过。
 `reading_question` 的固件侧 Phase 6（`listening_mode` + `book_id`）已实现，待联调验证多轮对话。
+**固件 Phase 7 已实现**：设备忙碌时不拒绝，改发 `abort(reason=remote_trigger, trigger={...})`。
+**server Phase 6 已实现**：abort handler 提取 `remote_trigger` reason 并复用 `on_trigger_context_updated()` 链路。
+**adapter 阻塞**：`service.py` 仍在 `is_alive=true` 时提前返回 `device_busy`，MCP 命令未到达固件。需去掉提前拒绝，让 MCP 下发到设备，由固件决定行为。
 
 ## Requirements and Constraints
 
@@ -24,7 +27,7 @@ landoubao → [adapter ✅] → [gateway ✅ trigger透传已部署] → [固件
 
 ### 约束
 
-1. 仅在设备处于 `kDeviceStateIdle` 时允许启动，其他状态返回错误。
+1. 仅在设备处于 `kDeviceStateIdle` 时直接启动新会话；在 `kDeviceStateSpeaking` / `kDeviceStateListening` 等忙碌状态时改为通过 abort 注入 trigger（Phase 7）。
 2. 不修改 gateway 代码。
 3. 不修改 server 代码（首版）。
 4. 遵循现有 MCP tool 注册模式（参考 `PressToTalkMcpTool`）。
@@ -101,14 +104,15 @@ gateway 的 `/api/commands/:clientId` 对 `sendMcpRequest` 设了 **5 秒超时*
 **回调逻辑：**
 
 ```
-1. 检查 Application::GetDeviceState() == kDeviceStateIdle
-   - 不是 idle → 返回错误 {"status": "rejected", "reason": "device_busy", "state": "..."}
+1. 检查 Application::GetDeviceState()
+   - kDeviceStateIdle → 正常远程唤醒流程（新建 WS）
+   - kDeviceStateSpeaking / kDeviceStateListening → 对话中打断注入（Phase 7）
+   - 其它状态 → 返回错误 {"status": "rejected", "reason": "device_busy", "state": "..."}
 2. 记录 trigger 上下文到成员变量（供后续扩展使用）
-3. 调用 Application::GetInstance().StartListening()
-4. 返回 {"status": "accepted", "trigger_id": "..."}
+3. 如果 Idle：调用 Application::GetInstance().StartListening()
+4. 如果忙碌：调用 protocol_->SendAbortSpeaking(kAbortReasonRemoteTrigger, trigger_json)
+5. 返回 {"status": "accepted"/"trigger_injected", "trigger_id": "..."}
 ```
-
-注意：返回 `accepted` 只表示"已请求启动对话"，不保证对话成功建立。
 
 **涉及文件：**
 
@@ -197,6 +201,91 @@ hello 消息扩展（向后兼容，无此字段时 server 行为不变）：
 
 - 设备端在对话结束后用 trigger_id 调 adapter 做结果回写（如果 server 不做此事）。
 - ~~根据 phase 不同（reading_remind vs reading_question）调整设备端行为（如 LED 颜色/提示音）。~~ → 设备行为差异由 `listening_mode` 控制（Phase 6），非 phase 业务语义。
+
+### Phase 7: 对话中提醒打断注入 ✅ 已实现
+
+> **对应主项目任务：** 整体推进方案 § 4C.5
+> **架构设计参见：** 整体架构设计 § 5.6 对话中提醒打断注入
+>
+> 2026-04-14 验证状态：固件侧已实现三路分支（Idle→accepted / Speaking+Listening→trigger_injected / 其它→rejected）。
+> server 侧 abort handler 已实现 `remote_trigger` reason 处理（含测试用例）。
+> **阻塞点**：adapter `service.py` 在 `is_alive=true` 时提前返回 `device_busy`，MCP 命令未到达固件。需 adapter 去掉提前拒绝。
+
+**背景：** Phase 1–6 中 `start_remote` 仅在设备 Idle 时发起新会话。当设备正在对话（Speaking / Listening）时，返回 `device_busy` 拒绝。新设计不再拒绝，而是通过已有 WS 连接发送 abort 消息注入 trigger。
+
+**设计原则：**
+- 复用现有 abort 协议（`wake_word_detected` 已拉通），新增 `remote_trigger` reason。
+- 复用现有 trigger 消费链路（server 的 `on_trigger_context_updated` 已实现）。
+- 固件不新开 WS 连接，直接通过当前会话的 WS 发送 abort + trigger。
+
+**固件改动：**
+
+1. **`protocol.h`** — AbortReason 枚举新增：
+   ```cpp
+   enum AbortReason {
+       kAbortReasonNone = 0,
+       kAbortReasonWakeWordDetected = 1,
+       kAbortReasonRemoteTrigger = 2,  // 新增
+   };
+   ```
+
+2. **`protocol.cc`** — `SendAbortSpeaking` 支持携带 trigger JSON：
+   ```cpp
+   void Protocol::SendAbortSpeaking(AbortReason reason, const std::string& trigger_json) {
+       cJSON* root = cJSON_CreateObject();
+       cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+       cJSON_AddStringToObject(root, "type", "abort");
+       cJSON_AddStringToObject(root, "reason",
+           reason == kAbortReasonRemoteTrigger ? "remote_trigger" : "wake_word_detected");
+       if (!trigger_json.empty()) {
+           cJSON* trigger = cJSON_Parse(trigger_json.c_str());
+           if (trigger) cJSON_AddItemToObject(root, "trigger", trigger);
+       }
+       // ... send
+   }
+   ```
+
+3. **`start_remote_mcp_tool.cc`** — 回调逻辑改为分支：
+   ```cpp
+   auto state = app.GetDeviceState();
+   if (state == kDeviceStateIdle) {
+       // 现有流程：新建 WS → hello + trigger
+       app.SetPendingTriggerContext(ctx);
+       app.StartListening();
+       return ReturnValue({"status": "accepted", ...});
+   } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
+       // 新增：对话中打断注入
+       std::string trigger_json = BuildTriggerJson(ctx);
+       app.GetProtocol()->SendAbortSpeaking(kAbortReasonRemoteTrigger, trigger_json);
+       return ReturnValue({"status": "trigger_injected", ...});
+   } else {
+       return ReturnValue({"status": "rejected", "reason": "device_busy", ...});
+   }
+   ```
+
+**abort 消息格式：**
+```json
+{"session_id": "...", "type": "abort", "reason": "remote_trigger",
+ "trigger": {"trigger_id": "...", "phase": "reading_remind", "book_title": "...", ...}}
+```
+
+**涉及文件：**
+
+| 文件                                          | 操作 | 说明                                             |
+| --------------------------------------------- | ---- | ------------------------------------------------ |
+| `main/protocols/protocol.h`                   | 修改 | AbortReason 枚举新增 `kAbortReasonRemoteTrigger` |
+| `main/protocols/protocol.cc`                  | 修改 | `SendAbortSpeaking` 支持 trigger JSON 参数       |
+| `main/boards/common/start_remote_mcp_tool.cc` | 修改 | 回调逻辑 busy 状态不拒绝，改发 abort + trigger   |
+
+**预估改动量：** ~25 行（protocol.h 1 行 + protocol.cc ~10 行 + start_remote_mcp_tool.cc ~15 行）
+
+**验证方式：**
+1. 设备正在对话时，用 `task_simulator` 触发 `start_remote`。
+2. 确认设备返回 `{"status": "trigger_injected"}`，不再返回 `device_busy`。
+3. 确认 server 日志收到 abort(reason=remote_trigger, trigger={...})。
+4. 确认 server 打断当前对话并播报提醒内容。
+5. 回归：设备 Idle 时 `start_remote` 仍正常新建会话，行为不变。
+6. 回归：本地唤醒词打断仍使用 `wake_word_detected`，行为不变。
 
 ### Phase 5: ManualStop 后主动关闭音频通道 ✅（075d6183）
 
