@@ -732,3 +732,11 @@ bool AudioService::IsAfeWakeWord() {
     return false;
 #endif
 }
+
+bool AudioService::IsCustomWakeWord() {
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    return wake_word_ != nullptr && dynamic_cast<CustomWakeWord*>(wake_word_.get()) != nullptr;
+#else
+    return false;
+#endif
+}

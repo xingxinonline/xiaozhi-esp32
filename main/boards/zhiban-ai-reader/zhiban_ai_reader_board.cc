@@ -3,8 +3,10 @@
 #include "button.h"
 #include "codecs/box_audio_codec.h"
 #include "config.h"
+#include "display.h"
 #include "mcp_server.h"
 #include "led/gpio_led.h"
+#include "settings.h"
 
 #include <driver/i2c_master.h>
 #include <esp_adc/adc_cali.h>
@@ -13,6 +15,31 @@
 #include <esp_log.h>
 
 #define TAG "ZhibanAiReaderBoard"
+
+namespace {
+
+constexpr char kConversationSettingsNamespace[] = "conversation";
+constexpr char kDefaultListeningModeKey[] = "default_mode";
+
+ListeningMode LoadDefaultListeningMode() {
+    Settings settings(kConversationSettingsNamespace, false);
+    auto stored_mode = settings.GetInt(kDefaultListeningModeKey, kListeningModeAutoStop);
+    switch (stored_mode) {
+        case kListeningModeAutoStop:
+        case kListeningModeManualStop:
+        case kListeningModeRealtime:
+            return static_cast<ListeningMode>(stored_mode);
+        default:
+            return kListeningModeAutoStop;
+    }
+}
+
+void SaveDefaultListeningMode(ListeningMode mode) {
+    Settings settings(kConversationSettingsNamespace, true);
+    settings.SetInt(kDefaultListeningModeKey, mode);
+}
+
+} // namespace
 
 class ZhibanAiReaderBatteryMonitor {
 private:
@@ -163,6 +190,8 @@ private:
     }
 
     void InitializeButtons() {
+        Application::GetInstance().SetDefaultListeningMode(LoadDefaultListeningMode());
+
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
@@ -176,7 +205,15 @@ private:
         boot_button_.OnDoubleClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateIdle) {
-                app.SetAecMode(app.GetAecMode() == kAecOff ? kAecOnDeviceSide : kAecOff);
+                auto next_mode = app.GetConfiguredDefaultListeningMode() == kListeningModeRealtime
+                    ? kListeningModeAutoStop
+                    : kListeningModeRealtime;
+                app.SetDefaultListeningMode(next_mode);
+                SaveDefaultListeningMode(next_mode);
+                auto display = GetDisplay();
+                if (display != nullptr) {
+                    display->ShowNotification(next_mode == kListeningModeRealtime ? "实时模式" : "自动模式");
+                }
             }
         });
 #endif

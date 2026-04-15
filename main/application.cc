@@ -32,6 +32,7 @@ Application::Application() {
 #else
     aec_mode_ = kAecOff;
 #endif
+    default_listening_mode_ = aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
 
     esp_timer_create_args_t clock_timer_args = {
         .callback = [](void* arg) {
@@ -928,8 +929,8 @@ void Application::HandleStateChangedEvent() {
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
-                // Only AFE wake word can be detected in speaking mode
-                audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+                audio_service_.EnableWakeWordDetection(
+                    audio_service_.IsAfeWakeWord() || audio_service_.IsCustomWakeWord());
             }
             audio_service_.ResetDecoder();
             break;
@@ -996,8 +997,15 @@ void Application::SetListeningMode(ListeningMode mode) {
     SetDeviceState(kDeviceStateListening);
 }
 
+void Application::SetDefaultListeningMode(ListeningMode mode) {
+    default_listening_mode_ = mode;
+}
+
 ListeningMode Application::GetDefaultListeningMode() const {
-    return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+    if (default_listening_mode_ == kListeningModeRealtime && aec_mode_ == kAecOff) {
+        return kListeningModeAutoStop;
+    }
+    return default_listening_mode_;
 }
 
 void Application::Reboot() {

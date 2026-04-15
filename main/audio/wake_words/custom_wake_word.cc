@@ -3,7 +3,9 @@
 #include "system_info.h"
 #include "assets.h"
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_mn_iface.h>
 #include <esp_mn_models.h>
 #include <esp_mn_speech_commands.h>
@@ -16,6 +18,20 @@ CustomWakeWord::CustomWakeWord()
 }
 
 CustomWakeWord::~CustomWakeWord() {
+    if (detection_task_handle_ != nullptr) {
+        detection_task_should_stop_ = true;
+        running_ = false;
+        input_buffer_cv_.notify_all();
+        while (!detection_task_stopped_) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+
+    if (afe_data_ != nullptr) {
+        afe_iface_->destroy(afe_data_);
+        afe_data_ = nullptr;
+    }
+
     if (multinet_model_data_ != nullptr && multinet_ != nullptr) {
         multinet_->destroy(multinet_model_data_);
         multinet_model_data_ = nullptr;
@@ -29,7 +45,7 @@ CustomWakeWord::~CustomWakeWord() {
         heap_caps_free(wake_word_encode_task_buffer_);
     }
 
-    if (models_ != nullptr) {
+    if (owns_models_ && models_ != nullptr) {
         esp_srmodel_deinit(models_);
     }
 }
@@ -85,10 +101,12 @@ void CustomWakeWord::ParseWakenetModelConfig() {
 bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     codec_ = codec;
     commands_.clear();
+    owns_models_ = false;
 
     if (models_list == nullptr) {
         language_ = "cn";
         models_ = esp_srmodel_init("model");
+        owns_models_ = true;
 #ifdef CONFIG_CUSTOM_WAKE_WORD
         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
         commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
@@ -125,6 +143,51 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     esp_mn_commands_update();
     
     multinet_->print_active_speech_commands(multinet_model_data_);
+
+    int ref_num = codec_->input_reference() ? 1 : 0;
+    std::string input_format;
+    for (int i = 0; i < codec_->input_channels() - ref_num; i++) {
+        input_format.push_back('M');
+    }
+    for (int i = 0; i < ref_num; i++) {
+        input_format.push_back('R');
+    }
+
+    afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+    afe_config->aec_init = codec_->input_reference();
+    afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
+    afe_config->afe_perferred_core = 1;
+    afe_config->afe_perferred_priority = 1;
+    afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+
+    afe_iface_ = esp_afe_handle_from_config(afe_config);
+    afe_data_ = afe_iface_->create_from_config(afe_config);
+    afe_config_free(afe_config);
+    if (afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE data for custom wake word");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Custom wake word AFE ready, free heap: %lu, free PSRAM: %lu",
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    afe_feed_chunk_size_ = afe_iface_->get_feed_chunksize(afe_data_) * codec_->input_channels();
+    if (detection_task_handle_ == nullptr) {
+        detection_task_should_stop_ = false;
+        detection_task_stopped_ = false;
+        if (xTaskCreate([](void* arg) {
+                auto this_ = (CustomWakeWord*)arg;
+                this_->DetectionTask();
+                vTaskDelete(NULL);
+            }, "custom_ww_detect", 8192, this, 3, &detection_task_handle_) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create custom wake word detection task");
+            detection_task_stopped_ = true;
+            detection_task_handle_ = nullptr;
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -133,18 +196,46 @@ void CustomWakeWord::OnWakeWordDetected(std::function<void(const std::string& wa
 }
 
 void CustomWakeWord::Start() {
+    {
+        std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+        input_buffer_.clear();
+        input_buffer_offset_ = 0;
+        if (afe_data_ != nullptr) {
+            afe_iface_->reset_buffer(afe_data_);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(detect_mutex_);
+        if (multinet_ != nullptr && multinet_model_data_ != nullptr) {
+            multinet_->clean(multinet_model_data_);
+        }
+    }
     running_ = true;
+    input_buffer_cv_.notify_all();
 }
 
 void CustomWakeWord::Stop() {
     running_ = false;
 
-    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
-    input_buffer_.clear();
+    {
+        std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+        input_buffer_.clear();
+        input_buffer_offset_ = 0;
+        if (afe_data_ != nullptr) {
+            afe_iface_->reset_buffer(afe_data_);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(detect_mutex_);
+        if (multinet_ != nullptr && multinet_model_data_ != nullptr) {
+            multinet_->clean(multinet_model_data_);
+        }
+    }
+    input_buffer_cv_.notify_all();
 }
 
 void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
-    if (multinet_model_data_ == nullptr) {
+    if (afe_data_ == nullptr || afe_feed_chunk_size_ == 0) {
         return;
     }
 
@@ -154,61 +245,111 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         return;
     }
 
-    // If input channels is 2, we need to fetch the left channel data
-    if (codec_->input_channels() == 2) {
-        for (size_t i = 0; i < data.size(); i += 2) {
-            input_buffer_.push_back(data[i]);
-        }
-    } else {
-        input_buffer_.insert(input_buffer_.end(), data.begin(), data.end());
+    input_buffer_.insert(input_buffer_.end(), data.begin(), data.end());
+    while (input_buffer_.size() - input_buffer_offset_ >= afe_feed_chunk_size_) {
+        afe_iface_->feed(afe_data_, input_buffer_.data() + input_buffer_offset_);
+        input_buffer_offset_ += afe_feed_chunk_size_;
     }
-    
-    int chunksize = multinet_->get_samp_chunksize(multinet_model_data_);
-    while (input_buffer_.size() >= chunksize) {
-        std::vector<int16_t> chunk(input_buffer_.begin(), input_buffer_.begin() + chunksize);
-        StoreWakeWordData(chunk);
-        
-        esp_mn_state_t mn_state = multinet_->detect(multinet_model_data_, chunk.data());
-        
-        if (mn_state == ESP_MN_STATE_DETECTED) {
-            esp_mn_results_t *mn_result = multinet_->get_results(multinet_model_data_);
-            for (int i = 0; i < mn_result->num && running_; i++) {
-                ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f", 
-                        mn_result->command_id[i], mn_result->string, mn_result->prob[i]);
-                auto& command = commands_[mn_result->command_id[i] - 1];
-                if (command.action == "wake") {
-                    last_detected_wake_word_ = command.text;
-                    running_ = false;
-                    input_buffer_.clear();
-                    
-                    if (wake_word_detected_callback_) {
-                        wake_word_detected_callback_(last_detected_wake_word_);
-                    }
-                }
-            }
-            multinet_->clean(multinet_model_data_);
-        } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
-            ESP_LOGD(TAG, "Command word detection timeout, cleaning state");
-            multinet_->clean(multinet_model_data_);
+
+    if (input_buffer_offset_ > 0) {
+        if (input_buffer_offset_ >= input_buffer_.size()) {
+            input_buffer_.clear();
+            input_buffer_offset_ = 0;
+        } else if (input_buffer_offset_ >= afe_feed_chunk_size_ * 2) {
+            input_buffer_.erase(input_buffer_.begin(), input_buffer_.begin() + input_buffer_offset_);
+            input_buffer_offset_ = 0;
         }
-        
-        if (!running_) {
-            break;
-        }
-        input_buffer_.erase(input_buffer_.begin(), input_buffer_.begin() + chunksize);
     }
 }
 
 size_t CustomWakeWord::GetFeedSize() {
-    if (multinet_model_data_ == nullptr) {
+    if (afe_data_ == nullptr) {
         return 0;
     }
-    return multinet_->get_samp_chunksize(multinet_model_data_);
+    return afe_iface_->get_feed_chunksize(afe_data_);
 }
 
-void CustomWakeWord::StoreWakeWordData(const std::vector<int16_t>& data) {
+void CustomWakeWord::DetectionTask() {
+    while (!detection_task_should_stop_) {
+        {
+            std::unique_lock<std::mutex> lock(input_buffer_mutex_);
+            input_buffer_cv_.wait(lock, [this]() {
+                return detection_task_should_stop_ || running_;
+            });
+            if (detection_task_should_stop_) {
+                break;
+            }
+            if (!running_ || afe_data_ == nullptr) {
+                continue;
+            }
+        }
+
+        auto res = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
+        if (detection_task_should_stop_) {
+            break;
+        }
+        if (!running_ || res == nullptr || res->ret_value == ESP_FAIL) {
+            continue;
+        }
+
+        StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
+
+        std::string detected_wake_word;
+        {
+            std::lock_guard<std::mutex> lock(detect_mutex_);
+            if (!running_ || multinet_ == nullptr || multinet_model_data_ == nullptr) {
+                continue;
+            }
+
+            esp_mn_state_t mn_state = multinet_->detect(multinet_model_data_, const_cast<int16_t*>(res->data));
+            if (mn_state == ESP_MN_STATE_DETECTED) {
+                esp_mn_results_t* mn_result = multinet_->get_results(multinet_model_data_);
+                for (int i = 0; i < mn_result->num && running_; ++i) {
+                    ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f",
+                        mn_result->command_id[i], mn_result->string, mn_result->prob[i]);
+                    if (mn_result->command_id[i] <= 0 ||
+                        mn_result->command_id[i] > static_cast<int>(commands_.size())) {
+                        continue;
+                    }
+                    auto& command = commands_[mn_result->command_id[i] - 1];
+                    if (command.action == "wake") {
+                        detected_wake_word = command.text;
+                        break;
+                    }
+                }
+                multinet_->clean(multinet_model_data_);
+            } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
+                ESP_LOGD(TAG, "Command word detection timeout, cleaning state");
+                multinet_->clean(multinet_model_data_);
+            }
+        }
+
+        if (!detected_wake_word.empty()) {
+            last_detected_wake_word_ = detected_wake_word;
+            running_ = false;
+            {
+                std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+                input_buffer_.clear();
+                input_buffer_offset_ = 0;
+                if (afe_data_ != nullptr) {
+                    afe_iface_->reset_buffer(afe_data_);
+                }
+            }
+
+            if (wake_word_detected_callback_) {
+                wake_word_detected_callback_(last_detected_wake_word_);
+            }
+        }
+    }
+
+    detection_task_handle_ = nullptr;
+    detection_task_stopped_ = true;
+    input_buffer_cv_.notify_all();
+}
+
+void CustomWakeWord::StoreWakeWordData(const int16_t* data, size_t samples) {
     // store audio data to wake_word_pcm_
-    wake_word_pcm_.push_back(data);
+    wake_word_pcm_.emplace_back(data, data + samples);
     // keep about 2 seconds of data, detect duration is 30ms (sample_rate == 16000, chunksize == 512)
     while (wake_word_pcm_.size() > 2000 / 30) {
         wake_word_pcm_.pop_front();

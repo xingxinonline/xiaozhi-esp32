@@ -117,6 +117,8 @@ public:
     void SendMcpMessage(const std::string& payload);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
+    void SetDefaultListeningMode(ListeningMode mode);
+    ListeningMode GetConfiguredDefaultListeningMode() const { return default_listening_mode_; }
     ListeningMode GetDefaultListeningMode() const;
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
@@ -139,6 +141,7 @@ private:
     esp_timer_handle_t clock_timer_handle_ = nullptr;
     DeviceStateMachine state_machine_;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
+    ListeningMode default_listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
     std::string last_error_message_;
     AudioService audio_service_;

@@ -79,6 +79,7 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
+    afe_config_free(afe_config);
 
     xTaskCreate([](void* arg) {
         auto this_ = (AfeWakeWord*)arg;
