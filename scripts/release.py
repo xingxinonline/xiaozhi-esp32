@@ -14,8 +14,8 @@ os.chdir(Path(__file__).resolve().parent.parent)
 # Common utility functions
 ################################################################################
 
-def get_board_type_from_compile_commands() -> Optional[str]:
-    """Parse the current compiled BOARD_TYPE from build/compile_commands.json"""
+def _get_compile_define(define_name: str) -> Optional[str]:
+    """Parse a preprocessor define value from build/compile_commands.json."""
     compile_file = Path("build/compile_commands.json")
     if not compile_file.exists():
         return None
@@ -25,9 +25,20 @@ def get_board_type_from_compile_commands() -> Optional[str]:
         if not item["file"].endswith("main.cc"):
             continue
         cmd = item["command"]
-        if "-DBOARD_TYPE=\\\"" in cmd:
-            return cmd.split("-DBOARD_TYPE=\\\"")[1].split("\\\"")[0].strip()
+        marker = f'-D{define_name}=\\\"'
+        if marker in cmd:
+            return cmd.split(marker)[1].split("\\\"")[0].strip()
     return None
+
+
+def get_board_type_from_compile_commands() -> Optional[str]:
+    """Parse the current compiled BOARD_TYPE from build/compile_commands.json"""
+    return _get_compile_define("BOARD_TYPE")
+
+
+def get_board_name_from_compile_commands() -> Optional[str]:
+    """Parse the current compiled BOARD_NAME from build/compile_commands.json"""
+    return _get_compile_define("BOARD_NAME")
 
 
 def get_project_version() -> Optional[str]:
@@ -39,23 +50,55 @@ def get_project_version() -> Optional[str]:
     return None
 
 
+def get_project_description() -> Optional[dict]:
+    """Read build/project_description.json if it exists."""
+    project_description = Path("build/project_description.json")
+    if not project_description.exists():
+        return None
+    with project_description.open(encoding='utf-8') as f:
+        return json.load(f)
+
+
+def get_versioned_app_bin(version: str, device_name: Optional[str] = None) -> tuple[Path, str]:
+    """Resolve app bin from build metadata and return source path plus zip filename."""
+    project_description = get_project_description()
+    if project_description is not None:
+        app_bin_path = Path("build") / project_description["app_bin"]
+        resolved_device_name = device_name or get_board_name_from_compile_commands() or app_bin_path.stem
+        if app_bin_path.exists():
+            return app_bin_path, f"{resolved_device_name}_{version}.bin"
+
+    candidates = sorted(
+        path for path in Path("build").glob("*.bin")
+        if path.name != "merged-binary.bin"
+    )
+    if len(candidates) != 1:
+        raise FileNotFoundError("Failed to resolve app binary from build directory")
+
+    app_bin_path = candidates[0]
+    resolved_device_name = device_name or get_board_name_from_compile_commands() or app_bin_path.stem
+    return app_bin_path, f"{resolved_device_name}_{version}.bin"
+
+
 def merge_bin() -> None:
     if os.system("idf.py merge-bin") != 0:
         print("merge-bin failed", file=sys.stderr)
         sys.exit(1)
 
 
-def zip_bin(name: str, version: str) -> None:
-    """Zip build/merged-binary.bin to releases/v{version}_{name}.zip"""
+def zip_bin(name: str, version: str, device_name: Optional[str] = None) -> None:
+    """Zip merged-binary plus versioned app bin to releases/v{version}_{name}.zip"""
     out_dir = Path("releases")
     out_dir.mkdir(exist_ok=True)
     output_path = out_dir / f"v{version}_{name}.zip"
+    app_bin_path, versioned_app_bin_name = get_versioned_app_bin(version, device_name=device_name)
 
     if output_path.exists():
         output_path.unlink()
 
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
         zipf.write("build/merged-binary.bin", arcname="merged-binary.bin")
+        zipf.write(app_bin_path, arcname=versioned_app_bin_name)
     print(f"zip bin to {output_path} done")
 
 def _get_manufacturer(cfg: dict) -> Optional[str]:
@@ -390,7 +433,7 @@ def release(board_type: str, config_filename: str = "config.json", *, filter_nam
         merge_bin()
 
         # Zip
-        zip_bin(final_name, project_version)
+        zip_bin(final_name, project_version, device_name=name)
 
 ################################################################################
 # CLI entry
@@ -424,7 +467,8 @@ if __name__ == "__main__":
             print("Failed to parse board_type from compile_commands.json", file=sys.stderr)
             sys.exit(1)
         project_ver = get_project_version()
-        zip_bin(curr_board_type, project_ver)
+        curr_board_name = get_board_name_from_compile_commands()
+        zip_bin(curr_board_type, project_ver, device_name=curr_board_name)
         sys.exit(0)
 
     # Compile mode
