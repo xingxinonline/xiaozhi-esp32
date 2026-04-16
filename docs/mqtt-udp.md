@@ -60,6 +60,8 @@ sequenceDiagram
 
 ## 3. MQTT 控制通道
 
+会话控制消息在不同阶段的精确定义，尤其是 `hello`、`listen.start`、`tts.start` 与 `abort(reason=remote_trigger)` 的语义边界，见 [conversation-control-contract.md](./conversation-control-contract.md)。
+
 ### 3.1 连接建立
 
 设备通过 MQTT 连接到服务器，连接参数包括：

@@ -127,6 +127,8 @@ struct BinaryProtocol3 {
 
 ## 4. JSON 消息结构
 
+会话控制消息在不同阶段的精确定义，尤其是 `hello`、`listen.start`、`tts.start` 与 `abort(reason=remote_trigger)` 的语义边界，见 [conversation-control-contract.md](./conversation-control-contract.md)。
+
 WebSocket 文本帧以 JSON 方式传输，以下为常见的 `"type"` 字段及其对应业务逻辑。若消息里包含未列出的字段，可能为可选或特定实现细节。
 
 ### 4.1 设备端→服务器
