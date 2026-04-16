@@ -19,6 +19,12 @@
 
 #define TAG "Application"
 
+namespace {
+
+constexpr size_t kMaxBufferedIncomingAudioPackets = 16;
+
+} // namespace
+
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -90,6 +96,8 @@ void Application::Initialize() {
     state_machine_.AddStateChangeListener([this](DeviceState old_state, DeviceState new_state) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_STATE_CHANGED);
     });
+
+    RefreshStatusLight();
 
     // Start the clock timer to update the status bar
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -233,9 +241,8 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
-            if (GetDeviceState() == kDeviceStateListening) {
-                auto led = Board::GetInstance().GetLed();
-                led->OnStateChanged();
+            if (GetDeviceState() == kDeviceStateListening || GetDeviceState() == kDeviceStateAudioTesting) {
+                RefreshStatusLight();
             }
         }
 
@@ -264,6 +271,7 @@ void Application::Run() {
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
     network_connected_ = true;
+    status_light_recovering_network_ = false;
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
@@ -294,11 +302,13 @@ void Application::HandleNetworkConnectedEvent() {
     // Update the status bar immediately to show the network state
     auto display = Board::GetInstance().GetDisplay();
     display->UpdateStatusBar(true);
+    RefreshStatusLight();
 }
 
 void Application::HandleNetworkDisconnectedEvent() {
     network_connected_ = false;
     auto state = GetDeviceState();
+    status_light_recovering_network_ = ShouldNotifyNetworkDisconnect(state);
 
     if (ShouldNotifyNetworkDisconnect(state) && !network_feedback_pending_) {
         network_feedback_pending_ = true;
@@ -315,6 +325,7 @@ void Application::HandleNetworkDisconnectedEvent() {
     // Update the status bar immediately to show the network state
     auto display = Board::GetInstance().GetDisplay();
     display->UpdateStatusBar(true);
+    RefreshStatusLight();
 }
 
 void Application::HandleActivationDoneEvent() {
@@ -512,13 +523,32 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
+        auto state = GetDeviceState();
+        auto packet_count = incoming_server_audio_packets_.fetch_add(1) + 1;
+        if (packet_count <= 3 || (packet_count % 20) == 0) {
+            ESP_LOGI(TAG, "Incoming server audio packet #%u (state: %s, payload=%u, sample_rate=%d, frame_duration=%d)",
+                packet_count,
+                DeviceStateMachine::GetStateName(state),
+                packet->payload.size(),
+                packet->sample_rate,
+                packet->frame_duration);
+        }
+        if (state == kDeviceStateSpeaking) {
+            if (BufferIncomingAudioUntilSpeaking(packet, state)) {
+                return;
+            }
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            return;
+        }
+
+        if (state == kDeviceStateConnecting || state == kDeviceStateListening) {
+            BufferIncomingAudioUntilSpeaking(packet, state);
         }
     });
     
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+        incoming_server_audio_packets_.store(0);
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
             ESP_LOGW(TAG, "Server sample rate %d does not match device output sample rate %d, resampling may cause distortion",
                 protocol_->server_sample_rate(), codec->output_sample_rate());
@@ -528,6 +558,9 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            ESP_LOGI(TAG, "Audio channel closed with %u incoming server audio packets in this session",
+                incoming_server_audio_packets_.load());
+            ClearPendingIncomingAudio("audio_channel_closed");
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -540,6 +573,7 @@ void Application::InitializeProtocol() {
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
+                MarkPendingSpeakingAudioFlush();
                 Schedule([this]() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
@@ -547,6 +581,16 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
+                        auto stats = audio_service_.GetDebugStatistics();
+                        auto decode_delta = stats.decode_count - speaking_decode_count_baseline_;
+                        auto decode_nonzero_delta = stats.decode_nonzero_frames - speaking_decode_nonzero_baseline_;
+                        auto playback_delta = stats.playback_count - speaking_playback_count_baseline_;
+                        auto playback_nonzero_delta = stats.playback_nonzero_frames - speaking_playback_nonzero_baseline_;
+                        ESP_LOGI(TAG, "TTS stop received after %u incoming server audio packets",
+                            incoming_server_audio_packets_.load());
+                        ESP_LOGI(TAG, "Speaking audio stats: decoded=%u decode_nonzero=%u played=%u play_nonzero=%u",
+                            decode_delta, decode_nonzero_delta, playback_delta, playback_nonzero_delta);
+                        ClearPendingIncomingAudio("tts_stop");
                         if (listening_mode_ == kListeningModeManualStop) {
                             close_audio_channel_on_idle_ = true;
                             SetDeviceState(kDeviceStateIdle);
@@ -763,7 +807,8 @@ void Application::HandleStartListeningEvent() {
         return;
     }
 
-    bool play_popup = !HasPendingTriggerContext();
+    // Remote wakeup should emit the same wake cue as button/voice wakeup.
+    bool play_popup = true;
     auto mode = GetAndClearPendingListeningMode();
     
     if (state == kDeviceStateIdle) {
@@ -831,7 +876,7 @@ void Application::HandleWakeWordDetectedEvent() {
 
         if (state == kDeviceStateListening) {
             protocol_->SendStartListening(GetDefaultListeningMode());
-            audio_service_.ResetDecoder();
+            audio_service_.ResetDecoder("wake_word_restart_listening");
             audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
             // Re-enable wake word detection as it was stopped by the detection itself
             audio_service_.EnableWakeWordDetection(true);
@@ -914,6 +959,18 @@ void Application::PlayPendingReconnectSuccessIfReady() {
     audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
 }
 
+void Application::RefreshStatusLight() {
+    status_light_controller_.SetDeviceState(GetDeviceState());
+    status_light_controller_.SetVoiceActive(
+        (GetDeviceState() == kDeviceStateListening || GetDeviceState() == kDeviceStateAudioTesting) &&
+        IsVoiceDetected());
+    status_light_controller_.SetNetworkConnected(network_connected_);
+    status_light_controller_.SetRecoveringNetwork(status_light_recovering_network_);
+
+    auto* led = Board::GetInstance().GetLed();
+    led->ApplyScene(status_light_controller_.ComputeScene());
+}
+
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
@@ -924,12 +981,12 @@ void Application::HandleStateChangedEvent() {
 
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
-    auto led = board.GetLed();
-    led->OnStateChanged();
+    RefreshStatusLight();
     
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
+            ClearPendingIncomingAudio("enter_idle");
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
@@ -988,7 +1045,15 @@ void Application::HandleStateChangedEvent() {
                 audio_service_.EnableWakeWordDetection(
                     audio_service_.IsAfeWakeWord() || audio_service_.IsCustomWakeWord());
             }
-            audio_service_.ResetDecoder();
+            audio_service_.ResetDecoder("enter_speaking");
+            {
+                auto stats = audio_service_.GetDebugStatistics();
+                speaking_decode_count_baseline_ = stats.decode_count;
+                speaking_decode_nonzero_baseline_ = stats.decode_nonzero_frames;
+                speaking_playback_count_baseline_ = stats.playback_count;
+                speaking_playback_nonzero_baseline_ = stats.playback_nonzero_frames;
+            }
+            FlushPendingIncomingAudio();
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1036,8 +1101,82 @@ std::optional<StartRemoteTriggerContext> Application::GetAndClearPendingTriggerC
     return trigger_context;
 }
 
+bool Application::BufferIncomingAudioUntilSpeaking(std::unique_ptr<AudioStreamPacket>& packet, DeviceState state) {
+    std::lock_guard<std::mutex> lock(pending_incoming_audio_mutex_);
+    if (!pending_speaking_audio_flush_ && state != kDeviceStateConnecting && state != kDeviceStateListening) {
+        return false;
+    }
+
+    if (pending_incoming_audio_packets_.empty()) {
+        ESP_LOGI(TAG, "Buffering incoming audio before speaking (state: %s)",
+            DeviceStateMachine::GetStateName(state));
+    }
+    if (pending_incoming_audio_packets_.size() >= kMaxBufferedIncomingAudioPackets) {
+        ESP_LOGW(TAG, "Buffered incoming audio is full before speaking, dropping packet (state: %s, buffered: %u)",
+            DeviceStateMachine::GetStateName(state), pending_incoming_audio_packets_.size());
+        packet.reset();
+        return true;
+    }
+
+    pending_incoming_audio_packets_.push_back(std::move(packet));
+    return true;
+}
+
+void Application::MarkPendingSpeakingAudioFlush() {
+    std::lock_guard<std::mutex> lock(pending_incoming_audio_mutex_);
+    pending_speaking_audio_flush_ = true;
+}
+
+void Application::FlushPendingIncomingAudio() {
+    size_t total_flushed = 0;
+
+    while (true) {
+        std::deque<std::unique_ptr<AudioStreamPacket>> pending_packets;
+        {
+            std::lock_guard<std::mutex> lock(pending_incoming_audio_mutex_);
+            if (pending_incoming_audio_packets_.empty()) {
+                pending_speaking_audio_flush_ = false;
+                break;
+            }
+            pending_packets = std::move(pending_incoming_audio_packets_);
+        }
+
+        total_flushed += pending_packets.size();
+        while (!pending_packets.empty()) {
+            auto packet = std::move(pending_packets.front());
+            pending_packets.pop_front();
+            if (!audio_service_.PushPacketToDecodeQueue(std::move(packet))) {
+                ESP_LOGW(TAG, "Failed to flush buffered incoming audio into decode queue");
+                break;
+            }
+        }
+    }
+
+    if (total_flushed > 0) {
+        ESP_LOGI(TAG, "Flushed %u buffered incoming audio packets after tts.start", total_flushed);
+    }
+}
+
+void Application::ClearPendingIncomingAudio(const char* reason) {
+    size_t cleared_packets = 0;
+    bool had_pending_flush = false;
+    {
+        std::lock_guard<std::mutex> lock(pending_incoming_audio_mutex_);
+        cleared_packets = pending_incoming_audio_packets_.size();
+        had_pending_flush = pending_speaking_audio_flush_;
+        pending_incoming_audio_packets_.clear();
+        pending_speaking_audio_flush_ = false;
+    }
+
+    if (cleared_packets > 0 || had_pending_flush) {
+        ESP_LOGI(TAG, "Cleared %u buffered incoming audio packets (%s)",
+            cleared_packets, reason != nullptr ? reason : "unknown");
+    }
+}
+
 bool Application::AbortSpeaking(AbortReason reason, const std::string& trigger_json) {
     ESP_LOGI(TAG, "Abort speaking");
+    ClearPendingIncomingAudio("abort_speaking");
     if (!protocol_ || !protocol_->IsAudioChannelOpened()) {
         ESP_LOGW(TAG, "Cannot abort speaking: audio channel is not opened");
         return false;

@@ -11,12 +11,14 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <atomic>
 
 #include "protocol.h"
 #include "ota.h"
 #include "audio_service.h"
 #include "device_state.h"
 #include "device_state_machine.h"
+#include "status_light.h"
 #include "start_remote_mcp_tool.h"
 
 // Main event bits
@@ -159,9 +161,19 @@ private:
     std::optional<ListeningMode> pending_listening_mode_;
     std::mutex pending_trigger_context_mutex_;
     std::optional<StartRemoteTriggerContext> pending_trigger_context_;
+    std::mutex pending_incoming_audio_mutex_;
+    std::deque<std::unique_ptr<AudioStreamPacket>> pending_incoming_audio_packets_;
+    bool pending_speaking_audio_flush_ = false;
+    std::atomic<uint32_t> incoming_server_audio_packets_{0};
+    uint32_t speaking_decode_count_baseline_ = 0;
+    uint32_t speaking_decode_nonzero_baseline_ = 0;
+    uint32_t speaking_playback_count_baseline_ = 0;
+    uint32_t speaking_playback_nonzero_baseline_ = 0;
     bool network_connected_ = false;
     bool network_feedback_pending_ = false;
     bool play_reconnect_success_on_idle_ = false;
+    bool status_light_recovering_network_ = false;
+    StatusLightController status_light_controller_;
 
 
     // Event handlers
@@ -186,9 +198,14 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     bool HasPendingTriggerContext();
+    bool BufferIncomingAudioUntilSpeaking(std::unique_ptr<AudioStreamPacket>& packet, DeviceState state);
+    void MarkPendingSpeakingAudioFlush();
+    void FlushPendingIncomingAudio();
+    void ClearPendingIncomingAudio(const char* reason);
     bool ShouldNotifyNetworkDisconnect(DeviceState state) const;
     bool ShouldSuppressNetworkErrorSound(const std::string& message) const;
     void PlayPendingReconnectSuccessIfReady();
+    void RefreshStatusLight();
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

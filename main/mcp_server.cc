@@ -127,13 +127,16 @@ void McpServer::AddCommonTools() {
 
 void McpServer::AddUserOnlyTools() {
     // System tools
-    AddUserOnlyTool("self.get_system_info",
-        "Get the system information",
-        PropertyList(),
-        [this](const PropertyList& properties) -> ReturnValue {
-            auto& board = Board::GetInstance();
-            return board.GetSystemInfoJson();
-        });
+    auto& board = Board::GetInstance();
+    if (board.SupportsSystemInfoTool()) {
+        AddUserOnlyTool("self.get_system_info",
+            "Get the system information",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto& board = Board::GetInstance();
+                return board.GetSystemInfoJson();
+            });
+    }
 
     AddUserOnlyTool("self.reboot", "Reboot the system",
         PropertyList(),

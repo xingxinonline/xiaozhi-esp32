@@ -5,9 +5,10 @@
 #include "config.h"
 #include "display.h"
 #include "mcp_server.h"
-#include "led/gpio_led.h"
 #include "settings.h"
+#include "zhiban_ai_reader_dual_led.h"
 
+#include <cJSON.h>
 #include <driver/i2c_master.h>
 #include <esp_adc/adc_cali.h>
 #include <esp_adc/adc_cali_scheme.h>
@@ -223,16 +224,7 @@ private:
         battery_monitor_ = new ZhibanAiReaderBatteryMonitor();
     }
 
-    void InitializeTools() {
-        auto& mcp_server = McpServer::GetInstance();
-        mcp_server.AddTool("self.system.reconfigure_wifi",
-            "End this conversation and enter WiFi configuration mode.\n"
-            "**CAUTION** You must ask the user to confirm this action.",
-            PropertyList(), [this](const PropertyList& properties) {
-                EnterWifiConfigMode();
-                return true;
-            });
-    }
+    void InitializeTools() {}
 
 public:
     ZhibanAiReaderBoard() : boot_button_(BOOT_BUTTON_GPIO) {
@@ -247,7 +239,7 @@ public:
     }
 
     virtual Led* GetLed() override {
-        static GpioLed led(STATUS_LED_GPIO, 1);
+        static ZhibanAiReaderDualLed led(STATUS_LED_GPIO, INIT_LED_GPIO);
         return &led;
     }
 
@@ -266,6 +258,38 @@ public:
             AUDIO_CODEC_ES7210_ADDR,
             AUDIO_INPUT_REFERENCE);
         return &audio_codec;
+    }
+
+    virtual bool SupportsSystemInfoTool() const override {
+        return false;
+    }
+
+    virtual std::string GetDeviceStatusJson() override {
+        auto* root = cJSON_CreateObject();
+
+        auto* audio_speaker = cJSON_CreateObject();
+        if (auto codec = GetAudioCodec()) {
+            cJSON_AddNumberToObject(audio_speaker, "volume", codec->output_volume());
+        }
+        cJSON_AddItemToObject(root, "audio_speaker", audio_speaker);
+
+        int level = 0;
+        bool charging = false;
+        bool discharging = false;
+        if (GetBatteryLevel(level, charging, discharging)) {
+            auto* battery = cJSON_CreateObject();
+            cJSON_AddNumberToObject(battery, "level", level);
+            cJSON_AddBoolToObject(battery, "charging", charging);
+            cJSON_AddItemToObject(root, "battery", battery);
+        }
+
+        char* json = cJSON_PrintUnformatted(root);
+        std::string result = json != nullptr ? json : "{}";
+        if (json != nullptr) {
+            cJSON_free(json);
+        }
+        cJSON_Delete(root);
+        return result;
     }
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {

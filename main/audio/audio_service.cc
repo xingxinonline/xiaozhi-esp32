@@ -37,6 +37,23 @@
 
 #define TAG "AudioService"
 
+namespace {
+
+constexpr int16_t kNonSilentPcmPeakThreshold = 8;
+
+int16_t GetPcmPeakAbs(const std::vector<int16_t>& pcm) {
+    int16_t peak = 0;
+    for (auto sample : pcm) {
+        int32_t abs_sample = sample < 0 ? -static_cast<int32_t>(sample) : static_cast<int32_t>(sample);
+        if (abs_sample > peak) {
+            peak = static_cast<int16_t>(abs_sample);
+        }
+    }
+    return peak;
+}
+
+} // namespace
+
 AudioService::AudioService() {
     event_group_ = xEventGroupCreate();
 }
@@ -307,6 +324,9 @@ void AudioService::AudioOutputTask() {
         }
 
         codec_->OutputData(task->pcm);
+        if (GetPcmPeakAbs(task->pcm) > kNonSilentPcmPeakThreshold) {
+            debug_statistics_.playback_nonzero_frames++;
+        }
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
@@ -377,6 +397,9 @@ void AudioService::OpusCodecTask() {
                         resampled.resize(actual_output);
                         task->pcm = std::move(resampled);
                     }
+                    if (GetPcmPeakAbs(task->pcm) > kNonSilentPcmPeakThreshold) {
+                        debug_statistics_.decode_nonzero_frames++;
+                    }
                     lock.lock();
                     audio_playback_queue_.push_back(std::move(task));
                     audio_queue_cv_.notify_all();
@@ -389,7 +412,6 @@ void AudioService::OpusCodecTask() {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
                 lock.lock();
             }
-            debug_statistics_.decode_count++;
         }
         /* Encode the audio to send queue */
         if (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) {
@@ -585,7 +607,7 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         }
 
         /* We should make sure no audio is playing */
-        ResetDecoder();
+        ResetDecoder("enable_voice_processing");
         audio_input_need_warmup_ = true;
         // Reset input resampler to clear cached data from previous mode (e.g. WakeWord)
         // This prevents buffer overflow when switching between different feed sizes
@@ -665,8 +687,14 @@ void AudioService::WaitForPlaybackQueueEmpty() {
     });
 }
 
-void AudioService::ResetDecoder() {
+void AudioService::ResetDecoder(const char* reason) {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    ESP_LOGI(TAG, "Resetting decoder (%s): decode=%u playback=%u testing=%u timestamps=%u",
+        reason != nullptr ? reason : "unknown",
+        audio_decode_queue_.size(),
+        audio_playback_queue_.size(),
+        audio_testing_queue_.size(),
+        timestamp_queue_.size());
     std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
     if (opus_decoder_ != nullptr) {
         esp_opus_dec_reset(opus_decoder_);

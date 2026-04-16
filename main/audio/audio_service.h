@@ -98,8 +98,10 @@ struct AudioTask {
 struct DebugStatistics {
     uint32_t input_count = 0;
     uint32_t decode_count = 0;
+    uint32_t decode_nonzero_frames = 0;
     uint32_t encode_count = 0;
     uint32_t playback_count = 0;
+    uint32_t playback_nonzero_frames = 0;
 };
 
 class AudioService {
@@ -116,6 +118,7 @@ public:
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
     void WaitForPlaybackQueueEmpty();
+    DebugStatistics GetDebugStatistics() const { return debug_statistics_; }
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
     bool IsAfeWakeWord();
@@ -132,7 +135,7 @@ public:
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
-    void ResetDecoder();
+    void ResetDecoder(const char* reason = nullptr);
     void SetModelsList(srmodel_list_t* models_list);
 
 private:
