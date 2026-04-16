@@ -2,9 +2,9 @@
 
 ## 1. 文档目的
 
-本文档用于固化 xiaozhi-esp32 项目的状态灯架构设计，明确状态灯在系统中的职责、分层边界、语义模型与板级适配方式。
+本文档用于固化 xiaozhi-esp32 中 zhiban-ai-reader 的状态灯架构设计，明确状态灯在系统中的职责、分层边界、语义模型与板级适配方式。
 
-本文档的目标不是定义某一块板子的具体闪烁参数，而是先建立一套稳定、可扩展、可复用的状态灯架构，使后续不同硬件形态可以在统一语义下各自实现。
+本文档当前的直接目标不是统一整个仓库的所有板型，而是先为智伴 AI 板建立一套可落地、可验证、不过度抽象的状态灯架构。后续如果其它板型出现明确复用需求，再将成熟方案向外推广。
 
 本文档是架构与方案文档，不包含代码改动。
 
@@ -35,7 +35,7 @@
 
 1. 将状态灯从具体硬件控制中抽象出来，建立统一的语义层。
 2. 保证状态灯的输入来源清晰，只从系统状态与事件中推导，不反向读取杂散业务逻辑。
-3. 支持单色灯、RGB 灯、灯环等多种硬件能力，并允许能力退化。
+3. 以 zhiban-ai-reader 的双色 GPIO 状态灯为唯一近期目标，保留最小必要的后续复用空间。
 4. 让会话状态、系统状态和异常状态具备清晰优先级。
 5. 第一阶段优先覆盖 80% 的核心状态语义，不提前堆叠复杂叠加机制。
 6. 兼容当前 zhiban-ai-reader 这类无屏、双色、低电流 GPIO 状态灯板。
@@ -46,6 +46,7 @@
 2. 本阶段不为每一种异常都定义独立灯语。
 3. 本阶段不引入任意多层 overlay、动画脚本引擎或通用 DSL。
 4. 本阶段不要求状态灯直接承载所有用户交互反馈。
+5. 本阶段不以迁移 single_led、gpio_led、circular_strip 等全部现有实现为前置条件。
 
 ## 4. 设计原则
 
@@ -71,7 +72,7 @@
 
 ## 5. 总体设计结论
 
-推荐将状态灯系统拆分为四层：
+推荐将状态灯系统按四层理解，但第一阶段只要求这些边界在 zhiban-ai-reader 上成立：
 
 1. 状态源层
 2. 状态灯语义层
@@ -110,7 +111,7 @@
 
 职责：将 LightScene 转换为具体硬件行为。
 
-不同硬件形态分别实现各自的 renderer，例如：
+不同硬件形态未来可以分别实现各自的 renderer，例如：
 
 1. MonochromeLightRenderer
 2. RgbPixelLightRenderer
@@ -122,7 +123,7 @@
 
 职责：在板级代码中声明当前板卡使用哪一种 renderer，以及是否存在多颗灯。
 
-Board 只负责返回合适的状态灯组件实例，不负责拼装业务语义。
+对 zhiban-ai-reader 而言，Board 只负责返回合适的状态灯组件实例，不负责拼装业务语义。
 
 ## 6. 核心数据模型
 
@@ -294,7 +295,13 @@ LightRenderer 负责：
 
 ### 8.5 接口契约
 
-第一阶段为了降低改动面，Board::GetLed 的获取方式可以保持不变，但 Led 的职责必须从“状态感知驱动”收口为“纯场景渲染器”。
+由于当前目标明确是 zhiban-ai-reader，第一阶段不强制推动整个仓库的 Led 接口统一迁移。
+
+第一阶段的决策是：
+
+1. Board::GetLed 的获取方式保持不变。
+2. 为 zhiban-ai-reader 新增一个板级可见的 scene sink 抽象，用于消费 LightScene。
+3. 现有 Led::OnStateChanged 对非目标板保持兼容，不作为第一阶段的清理前置条件。
 
 推荐接口如下：
 
@@ -322,9 +329,9 @@ struct LightCalibrationProfile {
     uint16_t connect_pulse_ms;
 };
 
-class Led {
+class StatusLightSink {
 public:
-    virtual ~Led() = default;
+    virtual ~StatusLightSink() = default;
     virtual void ApplyScene(LightScene scene) = 0;
 };
 
@@ -332,15 +339,16 @@ class StatusLightController {
 public:
     void SetContext(StatusLightContext context);
     LightScene ComputeScene() const;
-    void Flush(Led& renderer);
+    void Flush(StatusLightSink& sink);
 };
 ```
 
 配套约束如下：
 
-1. Led 实现不得再主动读取 Application 单例。
-2. 校准参数由板级 renderer 在构造期持有，不由 Application 在运行时动态推导。
-3. 现有 OnStateChanged 只允许作为迁移期兼容壳存在，迁移完成后应删除。
+1. zhiban-ai-reader 的 StatusLightSink 实现不得再主动读取 Application 单例。
+2. 校准参数由 zhiban-ai-reader 的 renderer 在构造期持有，不由 Application 在运行时动态推导。
+3. 现有 OnStateChanged 在第一阶段继续保留给非目标板。
+4. 只有当至少第二块板明确需要复用同一套 scene sink 时，再评估把 StatusLightSink 上升为全仓库公共接口。
 
 ## 9. 板级适配策略
 
@@ -493,16 +501,16 @@ zhiban-ai-reader 当前更适合建模为一颗双色共阳 LED，而不是两�
 
 ## 11. 演进路线
 
-### 11.1 兼容迁移策略
+### 11.1 智伴板优先迁移策略
 
-为了避免一次性改穿所有板型，迁移顺序应明确如下：
+为了避免被全仓库泛化拖慢，迁移顺序明确如下：
 
 1. 保持 Board::GetLed 获取方式不变，先不扩大板级 API 变更面。
 2. 先在 Application 内引入 StatusLightController，并把状态、VAD、网络等输入收口为 StatusLightContext。
-3. 再将 Led 接口从 OnStateChanged 迁移为 ApplyScene，旧接口只保留短期兼容壳。
-4. 以 zhiban-ai-reader 作为首个双色 renderer 落地板型。
-5. 在 zhiban-ai-reader 跑通后，再逐步迁移 single_led、gpio_led、circular_strip 等现有实现。
-6. 所有板型迁移完成后，删除 OnStateChanged 和驱动层反查 Application 的旧模式。
+3. 仅为 zhiban-ai-reader 新增双色 scene sink 与 renderer。
+4. 先让 zhiban-ai-reader 跑通完整蓝、红、紫灯语。
+5. 其它板型继续沿用现状，不作为本阶段阻塞项。
+6. 只有当第二块板出现明确复用需求时，再把 scene sink 和 renderer 抽象上升到仓库公共层。
 
 ### 11.2 第一阶段
 
@@ -532,8 +540,8 @@ zhiban-ai-reader 当前更适合建模为一颗双色共阳 LED，而不是两�
 
 内容：
 
-1. 统一 RGB 板和灯环板的 renderer 实现。
-2. 复用同一套场景到多板型。
+1. 只有在第二块板明确需要复用时，才统一 RGB 板和灯环板的 renderer 实现。
+2. 复用已经在 zhiban-ai-reader 上验证过的场景与校准模型。
 3. 只在 renderer 层保留灯型差异。
 
 ## 12. 风险与约束
@@ -548,7 +556,7 @@ zhiban-ai-reader 当前更适合建模为一颗双色共阳 LED，而不是两�
 
 ### 12.3 过度设计的风险
 
-如果第一阶段就引入多层 overlay、脚本式动画描述或高度泛化配置，会显著增加实现复杂度，并拖慢当前主线演进。
+如果第一阶段就引入多层 overlay、脚本式动画描述、全仓库公共接口迁移或高度泛化配置，会显著增加实现复杂度，并拖慢当前主线演进。
 
 因此本设计明确采用：
 
@@ -560,8 +568,8 @@ zhiban-ai-reader 当前更适合建模为一颗双色共阳 LED，而不是两�
 
 后续实现可以按以下标准验证：
 
-1. 任意板型的 LED 驱动不再主动读取 Application 状态。
-2. 状态到灯语的映射只维护一份，不再分散在多个灯驱动中。
+1. zhiban-ai-reader 的双色 renderer 不再主动读取 Application 状态。
+2. zhiban-ai-reader 的状态到灯语映射只维护一份，不再分散在多个灯驱动中。
 3. Listening 阶段能区分静默监听与活跃监听。
 4. 网络异常和恢复中具备独立高优先级场景。
 5. zhiban-ai-reader 可以在双色 GPIO 灯上清晰表达待机、监听、播报、升级和异常等核心语义。
@@ -573,4 +581,4 @@ zhiban-ai-reader 当前更适合建模为一颗双色共阳 LED，而不是两�
 
 对当前项目而言，最合适的路径不是继续在各个 LED 驱动里补分支，而是建立统一的 StatusLightController，让状态机、VAD、网络和系统任务共同生成一个明确的 LightScene，再由不同板型按自身能力渲染。
 
-这条路径既能兼容 zhiban-ai-reader 这样的双色无屏 GPIO 灯板，也能为 RGB 灯和灯环板提供稳定的长期演进基础。
+这条路径先服务 zhiban-ai-reader 这块双色无屏 GPIO 灯板，并且只在它被验证稳定后，才考虑是否向 RGB 灯和灯环板推广。
