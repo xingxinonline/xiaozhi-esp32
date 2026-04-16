@@ -188,7 +188,8 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+            std::string_view sound = ShouldSuppressNetworkErrorSound(last_error_message_) ? std::string_view{} : Lang::Sounds::OGG_EXCLAMATION;
+            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark", sound);
         }
 
         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
@@ -262,9 +263,12 @@ void Application::Run() {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
+    network_connected_ = true;
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
+        network_feedback_pending_ = false;
+        play_reconnect_success_on_idle_ = false;
         Schedule([this]() {
             audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
         });
@@ -282,6 +286,9 @@ void Application::HandleNetworkConnectedEvent() {
             app->activation_task_handle_ = nullptr;
             vTaskDelete(NULL);
         }, "activation", 4096 * 2, this, 2, &activation_task_handle_);
+    } else if (network_feedback_pending_) {
+        play_reconnect_success_on_idle_ = true;
+        PlayPendingReconnectSuccessIfReady();
     }
 
     // Update the status bar immediately to show the network state
@@ -290,9 +297,17 @@ void Application::HandleNetworkConnectedEvent() {
 }
 
 void Application::HandleNetworkDisconnectedEvent() {
-    // Close current conversation when network disconnected
+    network_connected_ = false;
     auto state = GetDeviceState();
-    if (state == kDeviceStateConnecting || state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+
+    if (ShouldNotifyNetworkDisconnect(state) && !network_feedback_pending_) {
+        network_feedback_pending_ = true;
+        play_reconnect_success_on_idle_ = false;
+        audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
+    }
+
+    // Close current conversation when network disconnected
+    if (protocol_ != nullptr && (state == kDeviceStateConnecting || state == kDeviceStateListening || state == kDeviceStateSpeaking)) {
         ESP_LOGI(TAG, "Closing audio channel due to network disconnection");
         protocol_->CloseAudioChannel();
     }
@@ -700,10 +715,11 @@ void Application::HandleToggleChatEvent() {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
             Schedule([this, mode]() {
-                ContinueOpenAudioChannel(mode);
+                ContinueOpenAudioChannel(mode, true);
             });
             return;
         }
+        play_popup_on_listening_ = true;
         SetListeningMode(mode);
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
@@ -712,7 +728,7 @@ void Application::HandleToggleChatEvent() {
     }
 }
 
-void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+void Application::ContinueOpenAudioChannel(ListeningMode mode, bool play_popup) {
     // Check state again in case it was changed during scheduling
     if (GetDeviceState() != kDeviceStateConnecting) {
         return;
@@ -724,6 +740,9 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         }
     }
 
+    if (play_popup) {
+        play_popup_on_listening_ = true;
+    }
     SetListeningMode(mode);
 }
 
@@ -744,16 +763,20 @@ void Application::HandleStartListeningEvent() {
         return;
     }
 
+    bool play_popup = !HasPendingTriggerContext();
     auto mode = GetAndClearPendingListeningMode();
     
     if (state == kDeviceStateIdle) {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
-            Schedule([this, mode]() {
-                ContinueOpenAudioChannel(mode);
+            Schedule([this, mode, play_popup]() {
+                ContinueOpenAudioChannel(mode, play_popup);
             });
             return;
+        }
+        if (play_popup) {
+            play_popup_on_listening_ = true;
         }
         SetListeningMode(mode);
     } else if (state == kDeviceStateSpeaking) {
@@ -859,6 +882,38 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 #endif
 }
 
+bool Application::HasPendingTriggerContext() {
+    std::lock_guard<std::mutex> lock(pending_trigger_context_mutex_);
+    return pending_trigger_context_.has_value();
+}
+
+bool Application::ShouldNotifyNetworkDisconnect(DeviceState state) const {
+    return state == kDeviceStateIdle ||
+           state == kDeviceStateConnecting ||
+           state == kDeviceStateListening ||
+           state == kDeviceStateSpeaking;
+}
+
+bool Application::ShouldSuppressNetworkErrorSound(const std::string& message) const {
+    if (!network_feedback_pending_) {
+        return false;
+    }
+
+    return message == Lang::Strings::SERVER_ERROR ||
+           message == Lang::Strings::SERVER_NOT_CONNECTED ||
+           message == Lang::Strings::SERVER_TIMEOUT;
+}
+
+void Application::PlayPendingReconnectSuccessIfReady() {
+    if (!play_reconnect_success_on_idle_ || !network_connected_ || GetDeviceState() != kDeviceStateIdle) {
+        return;
+    }
+
+    play_reconnect_success_on_idle_ = false;
+    network_feedback_pending_ = false;
+    audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+}
+
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
@@ -887,6 +942,7 @@ void Application::HandleStateChangedEvent() {
                     protocol_->CloseAudioChannel();
                 }
             }
+            PlayPendingReconnectSuccessIfReady();
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);

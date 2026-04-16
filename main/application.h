@@ -159,6 +159,9 @@ private:
     std::optional<ListeningMode> pending_listening_mode_;
     std::mutex pending_trigger_context_mutex_;
     std::optional<StartRemoteTriggerContext> pending_trigger_context_;
+    bool network_connected_ = false;
+    bool network_feedback_pending_ = false;
+    bool play_reconnect_success_on_idle_ = false;
 
 
     // Event handlers
@@ -170,7 +173,7 @@ private:
     void HandleNetworkDisconnectedEvent();
     void HandleActivationDoneEvent();
     void HandleWakeWordDetectedEvent();
-    void ContinueOpenAudioChannel(ListeningMode mode);
+    void ContinueOpenAudioChannel(ListeningMode mode, bool play_popup = false);
     void ContinueWakeWordInvoke(const std::string& wake_word);
 
     // Activation task (runs in background)
@@ -182,6 +185,10 @@ private:
     void InitializeProtocol();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+    bool HasPendingTriggerContext();
+    bool ShouldNotifyNetworkDisconnect(DeviceState state) const;
+    bool ShouldSuppressNetworkErrorSound(const std::string& message) const;
+    void PlayPendingReconnectSuccessIfReady();
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
