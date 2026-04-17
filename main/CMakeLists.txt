@@ -876,15 +876,27 @@ elseif(CONFIG_LANGUAGE_SR_RS)
 endif()
 
 # Define generation path
-set(LANG_JSON "${CMAKE_CURRENT_SOURCE_DIR}/assets/locales/${LANG_DIR}/language.json")
+set(LANG_SOUNDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/locales/${LANG_DIR}")
+set(BASE_LANG_SOUNDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/locales/en-US")
+set(COMMON_SOUNDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/common")
+set(LANG_JSON "${LANG_SOUNDS_DIR}/language.json")
+set(BASE_LANG_JSON "${BASE_LANG_SOUNDS_DIR}/language.json")
 set(LANG_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/assets/lang_config.h")
 
 # Collect current language audio files
-file(GLOB LANG_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/locales/${LANG_DIR}/*.ogg)
+if(CMAKE_SCRIPT_MODE_FILE)
+    file(GLOB LANG_SOUNDS ${LANG_SOUNDS_DIR}/*.ogg)
+else()
+    file(GLOB LANG_SOUNDS CONFIGURE_DEPENDS ${LANG_SOUNDS_DIR}/*.ogg)
+endif()
 
 # If not en-US, collect en-US audio files as fallback for missing files
 if(NOT LANG_DIR STREQUAL "en-US")
-    file(GLOB EN_US_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/locales/en-US/*.ogg)
+    if(CMAKE_SCRIPT_MODE_FILE)
+        file(GLOB EN_US_SOUNDS ${BASE_LANG_SOUNDS_DIR}/*.ogg)
+    else()
+        file(GLOB EN_US_SOUNDS CONFIGURE_DEPENDS ${BASE_LANG_SOUNDS_DIR}/*.ogg)
+    endif()
     
     # Extract filenames (without path) from current language
     set(EXISTING_NAMES "")
@@ -903,7 +915,28 @@ if(NOT LANG_DIR STREQUAL "en-US")
     endforeach()
 endif()
 
-file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
+if(CMAKE_SCRIPT_MODE_FILE)
+    file(GLOB COMMON_SOUNDS ${COMMON_SOUNDS_DIR}/*.ogg)
+else()
+    file(GLOB COMMON_SOUNDS CONFIGURE_DEPENDS ${COMMON_SOUNDS_DIR}/*.ogg)
+endif()
+
+set(LANG_HEADER_DEPENDS
+    ${LANG_JSON}
+    ${PROJECT_DIR}/scripts/gen_lang.py
+    ${LANG_SOUNDS_DIR}
+    ${COMMON_SOUNDS_DIR}
+    ${LANG_SOUNDS}
+    ${COMMON_SOUNDS}
+)
+
+if(NOT LANG_DIR STREQUAL "en-US")
+    list(APPEND LANG_HEADER_DEPENDS
+        ${BASE_LANG_JSON}
+        ${BASE_LANG_SOUNDS_DIR}
+        ${EN_US_SOUNDS}
+    )
+endif()
 
 # If target chip is ESP32, exclude specific files to avoid build errors
 if(CONFIG_IDF_TARGET_ESP32)
@@ -971,9 +1004,7 @@ add_custom_command(
     COMMAND python ${PROJECT_DIR}/scripts/gen_lang.py
             --language "${LANG_DIR}"
             --output "${LANG_HEADER}"
-    DEPENDS
-        ${LANG_JSON}
-        ${PROJECT_DIR}/scripts/gen_lang.py
+    DEPENDS ${LANG_HEADER_DEPENDS}
     COMMENT "Generating ${LANG_DIR} language config"
 )
 

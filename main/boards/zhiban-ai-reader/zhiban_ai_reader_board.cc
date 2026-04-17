@@ -1,5 +1,6 @@
 #include "wifi_board.h"
 #include "application.h"
+#include "assets/lang_config.h"
 #include "button.h"
 #include "codecs/box_audio_codec.h"
 #include "config.h"
@@ -211,6 +212,9 @@ private:
                     : kListeningModeRealtime;
                 app.SetDefaultListeningMode(next_mode);
                 SaveDefaultListeningMode(next_mode);
+                app.PlaySound(next_mode == kListeningModeRealtime
+                    ? Lang::Sounds::OGG_REALTIME_MODE
+                    : Lang::Sounds::OGG_AUTO_MODE);
                 auto display = GetDisplay();
                 if (display != nullptr) {
                     display->ShowNotification(next_mode == kListeningModeRealtime ? "实时模式" : "自动模式");
