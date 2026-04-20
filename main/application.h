@@ -152,6 +152,7 @@ private:
     bool has_server_time_ = false;
     bool aborted_ = false;
     bool assets_version_checked_ = false;
+    bool play_wakeup_response_on_listening_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool close_audio_channel_on_idle_ = false;
     int clock_ticks_ = 0;

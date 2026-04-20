@@ -79,6 +79,7 @@ void Application::Initialize() {
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
     audio_service_.Start();
+    audio_service_.PlaySound(Lang::Sounds::OGG_POWERED_ON);
 
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
@@ -196,7 +197,7 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
-            std::string_view sound = ShouldSuppressNetworkErrorSound(last_error_message_) ? std::string_view{} : Lang::Sounds::OGG_EXCLAMATION;
+            std::string_view sound = ShouldSuppressNetworkErrorSound(last_error_message_) ? std::string_view{} : Lang::Sounds::OGG_NETWORK_FAILED;
             Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark", sound);
         }
 
@@ -278,7 +279,7 @@ void Application::HandleNetworkConnectedEvent() {
         network_feedback_pending_ = false;
         play_reconnect_success_on_idle_ = false;
         Schedule([this]() {
-            audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+            audio_service_.PlaySound(Lang::Sounds::OGG_NETWORK_CONNECTED);
         });
 
         // Network is ready, start activation
@@ -313,7 +314,7 @@ void Application::HandleNetworkDisconnectedEvent() {
     if (ShouldNotifyNetworkDisconnect(state) && !network_feedback_pending_) {
         network_feedback_pending_ = true;
         play_reconnect_success_on_idle_ = false;
-        audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
+        audio_service_.PlaySound(Lang::Sounds::OGG_NETWORK_FAILED);
     }
 
     // Close current conversation when network disconnected
@@ -573,6 +574,10 @@ void Application::InitializeProtocol() {
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
+                if (GetDeviceState() == kDeviceStateSpeaking) {
+                    ESP_LOGW(TAG, "Ignoring duplicate tts.start while already speaking");
+                    return;
+                }
                 MarkPendingSpeakingAudioFlush();
                 Schedule([this]() {
                     aborted_ = false;
@@ -877,12 +882,12 @@ void Application::HandleWakeWordDetectedEvent() {
         if (state == kDeviceStateListening) {
             protocol_->SendStartListening(GetDefaultListeningMode());
             audio_service_.ResetDecoder("wake_word_restart_listening");
-            audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+            audio_service_.PlaySound(Lang::Sounds::OGG_WAKEUP_RESPONSE);
             // Re-enable wake word detection as it was stopped by the detection itself
             audio_service_.EnableWakeWordDetection(true);
         } else {
-            // Play popup sound and start listening again
-            play_popup_on_listening_ = true;
+            // Play wake word response and start listening again
+            play_wakeup_response_on_listening_ = true;
             SetListeningMode(GetDefaultListeningMode());
         }
     } else if (state == kDeviceStateActivating) {
@@ -918,11 +923,11 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     }
     // Set the chat state to wake word detected
     protocol_->SendWakeWordDetected(wake_word);
+    play_wakeup_response_on_listening_ = true;
     SetListeningMode(GetDefaultListeningMode());
 #else
-    // Set flag to play popup sound after state changes to listening
-    // (PlaySound here would be cleared by ResetDecoder in EnableVoiceProcessing)
-    play_popup_on_listening_ = true;
+    // Play wake word response after ResetDecoder has been applied in the listening state.
+    play_wakeup_response_on_listening_ = true;
     SetListeningMode(GetDefaultListeningMode());
 #endif
 }
@@ -956,7 +961,7 @@ void Application::PlayPendingReconnectSuccessIfReady() {
 
     play_reconnect_success_on_idle_ = false;
     network_feedback_pending_ = false;
-    audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+    audio_service_.PlaySound(Lang::Sounds::OGG_NETWORK_CONNECTED);
 }
 
 void Application::RefreshStatusLight() {
@@ -1006,12 +1011,14 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
             break;
-        case kDeviceStateListening:
+        case kDeviceStateListening: {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
 
+            bool play_listening_cue = play_wakeup_response_on_listening_ || play_popup_on_listening_;
+
             // Make sure the audio processor is running
-            if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
+            if (play_listening_cue || !audio_service_.IsAudioProcessorRunning()) {
                 // For auto mode, wait for playback queue to be empty before enabling voice processing
                 // This prevents audio truncation when STOP arrives late due to network jitter
                 if (listening_mode_ == kListeningModeAutoStop) {
@@ -1031,12 +1038,17 @@ void Application::HandleStateChangedEvent() {
             audio_service_.EnableWakeWordDetection(false);
 #endif
             
-            // Play popup sound after ResetDecoder (in EnableVoiceProcessing) has been called
-            if (play_popup_on_listening_) {
+            // Play the pending listening cue after ResetDecoder (in EnableVoiceProcessing) has been called.
+            if (play_wakeup_response_on_listening_) {
+                play_wakeup_response_on_listening_ = false;
+                play_popup_on_listening_ = false;
+                audio_service_.PlaySound(Lang::Sounds::OGG_WAKEUP_RESPONSE);
+            } else if (play_popup_on_listening_) {
                 play_popup_on_listening_ = false;
                 audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
             }
             break;
+        }
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
@@ -1255,14 +1267,17 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
         ESP_LOGE(TAG, "Firmware upgrade failed, restarting audio service and continuing operation...");
         audio_service_.Start(); // Restart audio service
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER); // Restore power save level
-        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
+        Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "circle_xmark", Lang::Sounds::OGG_UPGRADE_FAILED);
         vTaskDelay(pdMS_TO_TICKS(3000));
         return false;
     } else {
         // Upgrade success, reboot immediately
         ESP_LOGI(TAG, "Firmware upgrade successful, rebooting...");
         display->SetChatMessage("system", "Upgrade successful, rebooting...");
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Brief pause to show message
+        audio_service_.Start();
+        audio_service_.PlaySound(Lang::Sounds::OGG_UPGRADE_SUCCESS);
+        audio_service_.WaitForPlaybackQueueEmpty();
+        vTaskDelay(pdMS_TO_TICKS(100));
         Reboot();
         return true;
     }

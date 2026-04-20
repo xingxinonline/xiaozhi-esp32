@@ -50,6 +50,16 @@ def get_sound_files(directory):
         return []
     return [f for f in os.listdir(directory) if f.endswith('.ogg')]
 
+
+SOUND_FALLBACK_ALIASES = {
+    'network_connected': 'success',
+    'network_failed': 'exclamation',
+    'powered_on': 'welcome',
+    'upgrade_failed': 'exclamation',
+    'upgrade_success': 'success',
+    'wakeup_response': 'popup',
+}
+
 def generate_header(lang_code, output_path):
     # 从输出路径推导项目结构
     # output_path 通常是 main/assets/lang_config.h
@@ -101,6 +111,7 @@ def generate_header(lang_code, output_path):
     # 生成字符串常量
     strings = []
     sounds = []
+    available_sound_names = set()
     for key, value in merged_strings.items():
         value = value.replace('"', '\\"')
         strings.append(f'        constexpr const char* {key.upper()} = "{value}";')
@@ -135,6 +146,7 @@ def generate_header(lang_code, output_path):
     # 生成语言特定音效常量
     for file in sorted(all_sound_files):
         base_name = os.path.splitext(file)[0]
+        available_sound_names.add(base_name)
         # 优先使用当前语言的音效，如果不存在则回退到 en-US
         if file in current_sounds:
             sound_lang = lang_code.replace('-', '_').lower()
@@ -152,6 +164,10 @@ def generate_header(lang_code, output_path):
     # 生成公共音效常量
     for file in sorted(common_sounds):
         base_name = os.path.splitext(file)[0]
+        if base_name in available_sound_names:
+            continue
+
+        available_sound_names.add(base_name)
         sounds.append(f'''
         extern const char ogg_{base_name}_start[] asm("_binary_{base_name}_ogg_start");
         extern const char ogg_{base_name}_end[] asm("_binary_{base_name}_ogg_end");
@@ -159,6 +175,13 @@ def generate_header(lang_code, output_path):
         static_cast<const char*>(ogg_{base_name}_start),
         static_cast<size_t>(ogg_{base_name}_end - ogg_{base_name}_start)
         }};''')
+
+    for alias_name, target_name in SOUND_FALLBACK_ALIASES.items():
+        if alias_name in available_sound_names or target_name not in available_sound_names:
+            continue
+
+        sounds.append(f'''
+        static const std::string_view OGG_{alias_name.upper()} = OGG_{target_name.upper()};''')
 
     # 填充模板
     content = HEADER_TEMPLATE.format(
